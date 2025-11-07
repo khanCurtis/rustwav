@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rspotify::{AuthCodeSpotify, clients::SpotifyBuilder, model::AlbumId};
+use rspotify::{AuthCodeSpotify, clients::SpotifyBuilder, model::{AlbumId, PlaylstId}};
 use std::env;
 
 pub async fn fetch_album(link: &str) -> Result<()> {
@@ -30,8 +30,35 @@ pub async fn fetch_album(link: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn fetch_playlist(_link: &str) -> Result<()> {
-    //Placeholder
-    println!("Playlist fetching not implemented yet");
-    Ok(())
+pub struct Playlist {
+    pub name: String,
+    pub tracks: Vec<String>, // track titles
+    pub artist: Vec<String>, // artist name(s)
+}
+
+pub async fn fetch_playlist(link: &str) -> Result<(Playlist)> {
+    let spotify = AuthCodeSpotify::default().client_credentials_manager().build();
+
+    // Extract playlist ID from link
+    let playlist_id = link.split("/playlist/").nth(1)
+        .and_then(|s| s.split('?').next())
+        .ok_or_else(|| anyhow::anyhow!("Invalid playlist link"))?;
+
+    let playlist_data = spotify.playlist(PlaylistId::from_id(playlist_id)?).await?;
+
+    let tracks = playlist_data.tracks.items.iter()
+        .filter_map(|item| item.track.as_ref())
+        .map(|track| track.name.clone())
+        .collect::<Vec<_>>();
+
+    let artists = playlist_data.tracks_items.iter()
+        .filter_map(|item| item.track.as_ref())
+        .map(|track| track.name.clone())
+        .collect::Vec<_>>();
+
+    Ok(Playlist {
+        name: playlist_data.name,
+        tracks,
+        artist: artist,
+    })
 }

@@ -37,6 +37,37 @@ async fn main() -> anyhow::Result<()> {
         }
 
         crate::cli::Commands::Playlist { link, format, quality: _ } => {
+            let playlist = sources::spotify::fetch_playlist(link).await?;
+            let playlist_folder = PathBuf::from("data/playlists");
+            let playlist_file_folder = PathBuf::from("data/playlists");
+
+            let mut download_paths = Vec::new();
+
+            for (track, artist) in playlist.tracks.iter().zip(playlist.artist.iter()) {
+                let entry = crate::db::TrackEntry {
+                    artist: artist.clone(),
+                    title: track.clone()
+                    path: format!("{}/{}", playlist_folder.display(), track),
+                };
+
+                if db.contains(&entry) {
+                    println!("Skipping already downloaded track: {}", track);
+                    downloaded_paths.push(PathBuf::from(entry.path.clone()));
+                    continue;
+                }
+
+                println!("Downloading track: {}", track);
+                let album_folder = file_utils::create_album_folder(&playlist_folder, artist, "Singles");
+                downloader::download_track(&format!("{} {}", artist, track), &album_folder, format)?;
+                metadata::tag_mp3(&track_path, artist, "Singles", track, 0)?;
+                db.add(entry.clone());
+                downloaded_paths.push(track_path);
+            }
+
+            file_utils::create_m3u(&playlist.name, &downloaded_paths, &playlist_file_folder)?;
+        }
+
+        crate::cli::Commands::Playlist { link, format, quality: _ } => {
             println!("Playlist fetching not implemented yet");
         }
     }
