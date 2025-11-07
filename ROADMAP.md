@@ -82,10 +82,9 @@ It rebuilds and organizes music from Spotify, YouTube, and local sources, with f
 |--------|---------|
 | `main` | Stable release branch. |
 | `dev` | Active development branch. |
-| `web-dashboard` | Web UI and REST/GraphQL API. |
-| `headless-mode` | Headless/server build for Raspberry Pi or servers. |
+| `dashboard` | Web UI and REST/GraphQL API. |
+| `headless` | Headless/server build for Raspberry Pi or servers. |
 | `portable` | Self-contained USB/SD builds with relative paths and local DB. |
-| `feature/audio-normalization` | Loudness normalization and FFmpeg integration testing. |
 
 💡 **Tip:** Use Cargo features to toggle modes:
 ```toml
