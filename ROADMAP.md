@@ -94,11 +94,12 @@ default = ["desktop"]
 desktop = ["tauri", "web"]
 headless = ["axum", "sqlite"]
 portable = []
-
+```
 Build example:
-
+```
 cargo build --release --features headless
 cargo build --release --features portable
+```
 
 Tech Stack
 
