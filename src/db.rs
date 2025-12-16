@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-#[derive(Serialize, Deserialize, Debug, Hash, Eq, ParialEq)]
+#[derive(Serialize, Deserialize, Debug, Hash, Eq, PartialEq, Clone)]
 pub struct TrackEntry {
     pub artist: String,
     pub title: String,
@@ -39,7 +39,10 @@ impl DownloadDB {
         self.tracks.contains(entry)
     }
 
-    fn savd(&self) {
+    fn save(&self) {
+        if let Some(parent) = stf::path::Path::new(&self.file_path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let data = serde_json::to_string_pretty(&self.tracks).unwrap();
         fs::write(&self.file_path, data).expect("Failed to save downloaded_songs.json");
     }

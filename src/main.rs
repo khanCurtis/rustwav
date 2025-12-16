@@ -1,13 +1,14 @@
 mod sources {
     pub mod spotify;
     pub mod models;
-};
+}
 mod downloader;
 mod metadata;
 mod file_utils;
 mod db;
+mod cli;
 
-use crate::{cli::Cli, db::DownloadDB, downloader, file_utils, metadata, sources::spotify};
+use crate::{cli::Cli, db::DownloadDB, file_utils, metadata, downloader, sources::spotify};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -15,99 +16,159 @@ use std::path::PathBuf;
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    // Base paths (create these folders if they don't exist)
     let music_path = PathBuf::from("data/music");
     let playlist_path = PathBuf::from("data/playlists");
-    let mut db = DownloadDB::new("data/cache/downloaded_songs.json");
+    let cache_path = "data/cache/downloaded_songs.json";
+
+    // Ensure runtime directories exist
+    std::fs::create_dir_all(&music_path)?;
+    std::fs::create_dir_all(&playlist_path)?;
+    std::fs::create_dir_all(std::path::Path::new("data/cache"))?;
+
+    let mut db = DownloadDB::new(cache_path);
 
     match &cli.command {
-        crate::cli::Commands::Album {
-            link,
-            format,
-            quality: _,
-        } => {
-            let album = spotify::fetch_album(link).await?;
-            let album_folder =
-                file_utils::create_album_folder(&music_path, &album.artist, &album.name);
+        crate::cli::Commands::Album { link, format, quality: _ } => {
+            // Fetch album metadata from Spotify
+            let album = spotify::fetch_album(&link).await?;
+            // Choose a main artist name (first one if available)
+            let main_artist = album
+                .artists
+                .get(0)
+                .and_then(|a| a.name.clone().into())
+                .unwrap_or_else(|| "Unknown Artist".to_string());
+            let album_name = album.name.clone();
+            
+            // Create album folder
+            let album_folder = file_utils::create_album_folder(&music_path, &main_artist, &album_name);
 
-            for (i, track) in album.tracks.iter().enumerate() {
+            let cover_path: Option<std::path::PathBuf> = {
+                if let Some(img) = album.images.get(0) {
+                    //TODO: implement downloader for the image
+                    let p = album_folder.join("cover.jpg");
+                    if p.exists() {
+                        Some(p)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
+            // Loop over tracks in the album (tracks is a Page with .items)
+            for (i, track) in album.tracks.items.iter().enumerate() {
+                // Each `track` is a SimplifiedTrack (has name and artists)
+                let track_title = track.name.clone();
+                let track_artist = track
+                    .artists
+                    .get(0)
+                    .and_then(|a| a.name.clone().into())
+                    .unwrap_or_else(|| main_artist.clone());
+
+                let safe_file_name = format!(
+                    "{} - {}.{}",
+                    file_utils::sanitize_filename(&track_artist),
+                    file_utils::sanitize_filename(&track_title),
+                    format
+                );
+
+                let file_path = album_folder.join(&safe_file_name);
+
                 let entry = crate::db::TrackEntry {
-                    artist: album.artist.clone(),
-                    title: track.clone(),
-                    path: format!("{}/{}", album_folder.display(), track),
+                    artist: track_artist.clone(),
+                    title: track_title.clone(),
+                    path: file_path.display().to_string(),
                 };
 
                 if db.contains(&entry) {
-                    println!("Skipping already downloaded track: {}", track);
+                    println!("Skipping already downloaded track: {} — {}", track_artist, track_title);
                     continue;
                 }
 
-                println!("Downloading track: {}", track);
-                downloader::download_track(
-                    &format("{} {}", album.artist, track),
-                    &album_folder,
-                    format,
-                )?;
-                let track_path = album_folder.join(format!("{}.{}", track, format));
-                metadata::tag_mp3(
-                    &track_path,
-                    &album.artist,
-                    &album.name,
-                    track,
-                    (i + 1) as u32,
-                )?;
+                println!("Downloading: {} — {}", track_artist, track_title);
+                // Build a search query (artist + title)
+                let query = format!("{} {}", track_artist, track_title);
 
+                // run blocking download in a task so we don't block tokio
+                let album_folder_clone = album_folder.clone();
+                let format_clone = format.clone();
+                let query_clone = query.clone();
+                tokio::task::spawn_blocking(move || {
+                    downloader::download_track(&query_clone, &album_folder_clone, &format_clone)
+                }).await?;
+
+                // Tag and save metadata
+                metadata::tag_mp3(&file_path, &track_artist, &album_name, &track_title, (i + 1) as u32)?;
+
+                // Add to DB
                 db.add(entry);
             }
+
+            println!("Album '{}' by {} finished.", album_name, main_artist);
         }
 
-        crate::cli::Commands::Playlist {
-            link,
-            format,
-            quality: _,
-        } => {
-            let playlist = sources::spotify::fetch_playlist(link).await?;
-            let playlist_folder = PathBuf::from("data/playlists");
-            let playlist_file_folder = PathBuf::from("data/playlists");
+        crate::cli::Commands::Playlist { link, format, quality: _ } => {
+            let playlist = spotify::fetch_playlist(&link).await?;
+            let playlist_name = playlist.name.clone();
 
-            let mut download_paths = Vec::new();
+            std::fs::create_dir_all(&playlist_path)?;
+            let mut downloaded_paths: Vec<PathBuf> = Vec::new();
 
-            for (track, artist) in playlist.tracks.iter().zip(playlist.artist.iter()) {
+            for item in playlist.tracks.items.iter() {
+                let track_obj = match &item.track {
+                    Some(t) => t,
+                    None => continue,
+                };
+                let track_title = track_obj.name.clone();
+                let track_artist = track_obj
+                    .artists
+                    .get(0)
+                    .and_then(|a| a.name.clone().into())
+                    .unwrap_or_else(|| "Unknown Artist".to_string());
+
+                let album_folder = file_utils::create_album_folder(&playlist_path, &track_artist, "Singles");
+                let safe_file_name = format!(
+                    "{} - {}.{}",
+                    file_utils::sanitize_filename(&track_artist),
+                    file_utils::sanitize_filename(&track_title),
+                    format
+                );
+                let file_path = album_folder.join(&safe_file_name);
+
                 let entry = crate::db::TrackEntry {
-                    artist: artist.clone(),
-                    title: track.clone(),
-                    path: format!("{}/{}", playlist_folder.display(), track),
+                    artist: track_artist.clone(),
+                    title: track_title.clone(),
+                    path: file_path.display().to_string(),
                 };
 
                 if db.contains(&entry) {
-                    println!("Skipping already downloaded track: {}", track);
-                    download_paths.push(PathBuf::from(entry.path.clone()));
+                    println!("Skipping already downloaded track: {} — {}", track_artist, track_title);
+                    downloaded_paths.push(std::path::PathBuf::from(entry.path.clone()));
                     continue;
                 }
 
-                println!("Downloading track: {}", track);
-                let album_folder =
-                    file_utils::create_album_folder(&playlist_folder, artist, "Singles");
-                downloader::download_track(
-                    &format!("{} {}", artist, track),
-                    &album_folder,
-                    format,
-                )?;
-                metadata::tag_mp3(&track_path, artist, "Singles", track, 0)?;
+                println!("Downloading: {} — {}", track_artist, track_title);
+                let query = format!("{} {}", track_artist, track_title);
+                let album_folder_clone = album_folder.clone();
+                let format_clone = format.clone();
+                let query_clone = query.clone();
+                tokio::task::spawn_blocking(move || {
+                    downloader::download_track(&query_clone, &album_folder_clone, &format_clone)
+                })
+                .await?
+                ?;
+
+                metadata::tag_mp3(&file_path, &track_artist, "Singles", &track_title, 0, None)?;
                 db.add(entry.clone());
-                download_paths.push(track_path);
+                downloaded_paths.push(file_path);
             }
 
-            file_utils::create_m3u(&playlist.name, &download_paths, &playlist_file_folder)?;
-        }
-
-        crate::cli::Commands::Playlist {
-            link,
-            format,
-            quality: _,
-        } => {
-            println!("Playlist fetching not implemented yet");
+            file_utils::create_m3u(&playlist_name, &downloaded_paths, &playlist_path)?;
+            println!("Playlist '{}' written with {} tracks", playlist_name, downloaded_paths.len());
         }
     }
 
     Ok(())
-}
+} 

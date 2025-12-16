@@ -1,3 +1,4 @@
+use anyhow::Context;
 use std::path::Path;
 use std::process::Command;
 
@@ -10,13 +11,15 @@ pub fn download_track(query: &str, output_path: &Path, format: &str) -> anyhow::
     let status = Command::new("yt-dlp")
         .args([
             "-x", // extract audio
+            "--no-playlist",
             "--audio-format",
             format, //mp3, flac, wav
             "-o",
-            &output_template, //output template
+            &output_template,
             query,
         ])
-        .status()?;
+        .status()
+        .context("failed to spawn yt-dlp")?;
 
     if !status.success() {
         anyhow::bail!("yt-dlp failed for query: {}", query);
