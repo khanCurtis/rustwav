@@ -1,7 +1,8 @@
 use anyhow::Context;
-use id3::{frame::Picture, Tag, TagLike, Version}; 
-use image::io::Reader as ImageReader;
-use std::{fs, path::{Path, PathBuf}};
+use id3::{frame::Picture, Tag, TagLike, Version};
+use image::{ImageReader, GenericImageView, ImageEncoder};
+use image::codecs::jpeg::JpegEncoder;
+use std::path::Path;
 
 const MAX_COVER_DIM: u32 = 500;
 const MAX_COVER_BYTES: usize = 300 * 1024;
@@ -24,7 +25,7 @@ pub fn tag_mp3(
 
     if let Some(cover) = cover_path {
         if cover.exists() {
-            if letOk(data) = resize_and_read_image(cover) {
+            if let Ok(data) = resize_and_read_image(cover) {
                 let picture = Picture {
                     mime_type: "image/jpeg".to_string(),
                     picture_type: id3::frame::PictureType::CoverFront,
@@ -41,6 +42,19 @@ pub fn tag_mp3(
     Ok(())
 }
 
+fn encode_jpeg(img: &image::DynamicImage, quality: u8) -> anyhow::Result<Vec<u8>> {
+    let mut buf: Vec<u8> = Vec::new();
+    let rgb_img = img.to_rgb8();
+    let encoder = JpegEncoder::new_with_quality(&mut buf, quality);
+    encoder.write_image(
+        rgb_img.as_raw(),
+        rgb_img.width(),
+        rgb_img.height(),
+        image::ExtendedColorType::Rgb8,
+    )?;
+    Ok(buf)
+}
+
 fn resize_and_read_image(cover: &Path) -> anyhow::Result<Vec<u8>> {
     let img = ImageReader::open(cover)?.decode()?;
     let (w, h) = img.dimensions();
@@ -48,20 +62,15 @@ fn resize_and_read_image(cover: &Path) -> anyhow::Result<Vec<u8>> {
     let new_w = (w as f32 * scale).round() as u32;
     let new_h = (h as f32 * scale).round() as u32;
     let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3);
-    
+
     // encode to JPEG
-    let mut buf: Vec<u8> = Vec::new();
-    resized.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageOutputFormat::Jpeg(85))?;
-    
+    let mut buf = encode_jpeg(&resized, 85)?;
+
     // if still too large, re-encode at lower quality
     if buf.len() > MAX_COVER_BYTES {
-        let mut q = 80;
+        let mut q = 80u8;
         loop {
-            buf.clear();
-            resized.write_to(
-                &mut std::io::Cursor::new(&mut buf),
-                image::ImageOutputFormat::Jpeg(q),
-            )?;
+            buf = encode_jpeg(&resized, q)?;
             if buf.len() <= MAX_COVER_BYTES || q <= 30 {
                 break;
             }
