@@ -8,15 +8,18 @@ pub fn download_track(query: &str, output_path: &Path, format: &str) -> anyhow::
         .to_string_lossy()
         .to_string();
 
+    // Use ytsearch: prefix to search YouTube for the track
+    let search_query = format!("ytsearch1:{}", query);
+
     let status = Command::new("yt-dlp")
         .args([
             "-x", // extract audio
             "--no-playlist",
             "--audio-format",
-            format, //mp3, flac, wav
+            format, // mp3, flac, wav
             "-o",
             &output_template,
-            query,
+            &search_query,
         ])
         .status()
         .context("failed to spawn yt-dlp")?;
