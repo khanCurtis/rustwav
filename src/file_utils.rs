@@ -58,7 +58,7 @@ pub fn create_m3u(playlist_name: &str, tracks: &[PathBuf], out_dir: &Path) -> an
        // attempt to write path relative to out_dir
        let rel = match track.strip_prefix(out_dir) {
            Ok(r) => r.to_owned(),
-           Err(_) => match track.strip_prefix(std::path::new(".")) {
+           Err(_) => match track.strip_prefix(std::path::Path::new(".")) {
                Ok(r2) => r2.to_owned(),
                Err(_) => track.clone(),
            },
