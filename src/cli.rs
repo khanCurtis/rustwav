@@ -11,7 +11,7 @@ pub struct Cli {
 
     /// Run in 3DS compatibility mode
     #[arg(long = "three-ds", default_value_t = false)]
-    pub three-ds: bool,
+    pub three_ds: bool,
 }
 
 #[derive(Subcommand)]
