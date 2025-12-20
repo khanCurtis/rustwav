@@ -8,8 +8,9 @@ mod file_utils;
 mod db;
 mod cli;
 
-use crate::{cli::Cli, db::DownloadDB, file_utils, metadata, downloader, sources::spotify};
+use crate::{cli::Cli, db::DownloadDB, sources::spotify};
 use clap::Parser;
+use rspotify::model::PlayableItem;
 use std::path::PathBuf;
 
 #[tokio::main]
@@ -44,9 +45,16 @@ async fn main() -> anyhow::Result<()> {
             let album_folder = file_utils::create_album_folder(&music_path, &main_artist, &album_name);
 
             let cover_path: Option<std::path::PathBuf> = {
-                if let Some(img) = album.images.get(0) {
-                    //TODO: implement downloader for the image
+                if let Some(image) = album.images.get(0) {
                     let p = album_folder.join("cover.jpg");
+                    if !p.exists() {
+                        // Download the album cover image
+                        if let Ok(response) = reqwest::blocking::get(&image.url) {
+                            if let Ok(bytes) = response.bytes() {
+                                let _ = std::fs::write(&p, &bytes);
+                            }
+                        }
+                    }
                     if p.exists() {
                         Some(p)
                     } else {
@@ -97,10 +105,10 @@ async fn main() -> anyhow::Result<()> {
                 let query_clone = query.clone();
                 tokio::task::spawn_blocking(move || {
                     downloader::download_track(&query_clone, &album_folder_clone, &format_clone)
-                }).await?;
+                }).await??;
 
                 // Tag and save metadata
-                metadata::tag_mp3(&file_path, &track_artist, &album_name, &track_title, (i + 1) as u32)?;
+                metadata::tag_mp3(&file_path, &track_artist, &album_name, &track_title, (i + 1) as u32, cover_path.as_deref())?;
 
                 // Add to DB
                 db.add(entry);
@@ -121,12 +129,20 @@ async fn main() -> anyhow::Result<()> {
                     Some(t) => t,
                     None => continue,
                 };
-                let track_title = track_obj.name.clone();
-                let track_artist = track_obj
-                    .artists
-                    .get(0)
-                    .and_then(|a| a.name.clone().into())
-                    .unwrap_or_else(|| "Unknown Artist".to_string());
+
+                // PlayableItem is an enum; extract track info from Track variant only
+                let (track_title, track_artist) = match track_obj {
+                    PlayableItem::Track(track) => {
+                        let title = track.name.clone();
+                        let artist = track
+                            .artists
+                            .get(0)
+                            .map(|a| a.name.clone())
+                            .unwrap_or_else(|| "Unknown Artist".to_string());
+                        (title, artist)
+                    }
+                    PlayableItem::Episode(_) => continue, // Skip podcast episodes
+                };
 
                 let album_folder = file_utils::create_album_folder(&playlist_path, &track_artist, "Singles");
                 let safe_file_name = format!(
