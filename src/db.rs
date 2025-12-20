@@ -40,7 +40,7 @@ impl DownloadDB {
     }
 
     fn save(&self) {
-        if let Some(parent) = stf::path::Path::new(&self.file_path).parent() {
+        if let Some(parent) = std::path::Path::new(&self.file_path).parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         let data = serde_json::to_string_pretty(&self.tracks).unwrap();
