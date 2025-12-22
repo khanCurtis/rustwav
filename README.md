@@ -2,6 +2,10 @@
 
 Rust-based music downloader and library manager. Downloads and organizes music from Spotify playlists/albums via YouTube with full metadata, album art, and ID3v2.3 tagging.
 
+## Branch: `cli`
+
+Command-line interface for rustwav. This branch contains the terminal-based downloader without any UI.
+
 ## Features
 
 - **Spotify integration** - Download albums and playlists from Spotify links
@@ -16,6 +20,7 @@ Rust-based music downloader and library manager. Downloads and organizes music f
 ```bash
 git clone https://github.com/khanCurtis/rustwav.git
 cd rustwav
+git checkout cli
 cargo build --release
 ```
 
@@ -80,8 +85,6 @@ data/music/
 
 | Branch | Purpose |
 |--------|---------|
-| `master` | Stable, release-ready (this branch) |
+| `master` | UI / Dashboard (web or TUI) |
+| `cli` | Command-line interface (this branch) |
 | `headless` | Automation / server mode |
-| `dashboard` | Future UI layer |
-
-Feature branches are created as needed and merged into master when complete.
