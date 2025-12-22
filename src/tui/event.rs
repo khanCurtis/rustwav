@@ -37,6 +37,7 @@ fn handle_normal_mode(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Tab => app.next_view(),
         KeyCode::Char('a') => app.start_add_album(),
         KeyCode::Char('p') => app.start_add_playlist(),
+        KeyCode::Char('P') => app.toggle_portable(),
         KeyCode::Up | KeyCode::Char('k') => match app.view {
             View::Queue => app.queue_up(),
             View::Library => app.library_up(),
@@ -47,10 +48,7 @@ fn handle_normal_mode(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
             View::Library => app.library_down(),
             _ => {}
         },
-        KeyCode::Char('r') => {
-            app.refresh_library();
-            app.status_message = "Library refreshed".to_string();
-        }
+        KeyCode::Char('r') => app.refresh_library(),
         _ => {}
     }
 }

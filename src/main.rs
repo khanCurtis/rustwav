@@ -9,7 +9,7 @@ mod db;
 mod cli;
 mod tui;
 
-use crate::{cli::{Cli, PortableConfig}, db::DownloadDB, sources::spotify, tui::App};
+use crate::{cli::{Cli, PortableConfig}, db::DownloadDB, sources::spotify, tui::{App, DownloadWorker}};
 use clap::Parser;
 use crossterm::{
     execute,
@@ -19,6 +19,7 @@ use ratatui::prelude::*;
 use rspotify::model::PlayableItem;
 use std::io::stdout;
 use std::path::PathBuf;
+use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -26,11 +27,11 @@ async fn main() -> anyhow::Result<()> {
 
     match &cli.command {
         Some(cmd) => run_cli(cmd, &cli).await,
-        None => run_tui(),
+        None => run_tui().await,
     }
 }
 
-fn run_tui() -> anyhow::Result<()> {
+async fn run_tui() -> anyhow::Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = stdout();
@@ -38,11 +39,24 @@ fn run_tui() -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Create app state
-    let mut app = App::new();
+    // Create channels for download communication
+    let (download_tx, download_rx) = mpsc::channel(32);
+    let (event_tx, event_rx) = mpsc::channel(32);
+
+    // Spawn the download worker
+    let worker = DownloadWorker::new(download_rx, event_tx);
+    tokio::spawn(async move {
+        worker.run().await;
+    });
+
+    // Create app state with channels
+    let mut app = App::new(download_tx, event_rx);
 
     // Main loop
     while app.running {
+        // Process any pending download events
+        app.process_events();
+
         terminal.draw(|frame| tui::ui::draw(frame, &app))?;
         tui::event::handle_events(&mut app)?;
     }
