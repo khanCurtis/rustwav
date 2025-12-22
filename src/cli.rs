@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(name = "rustwav")]
@@ -10,9 +10,30 @@ pub struct Cli {
     pub command: Commands,
 
     /// Run in portable mode (constrained devices: 3DS, car stereos, old MP3 players)
-    /// Forces MP3 format, FAT32-safe filenames, shallow folders, small cover art
     #[arg(long = "portable", short = 'p', default_value_t = false)]
     pub portable: bool,
+
+    /// Run in headless mode (no prompts, script-friendly output)
+    #[arg(long = "headless", short = 'H', default_value_t = false)]
+    pub headless: bool,
+
+    /// Output format for headless mode
+    #[arg(long = "output", short = 'o', value_enum, default_value_t = OutputFormat::Text)]
+    pub output_format: OutputFormat,
+
+    /// Quiet mode - only show errors
+    #[arg(long = "quiet", short = 'q', default_value_t = false)]
+    pub quiet: bool,
+
+    /// Verbose mode - show debug information
+    #[arg(long = "verbose", short = 'v', default_value_t = false)]
+    pub verbose: bool,
+}
+
+#[derive(Clone, Debug, ValueEnum, PartialEq)]
+pub enum OutputFormat {
+    Text,
+    Json,
 }
 
 /// Runtime configuration derived from CLI flags
@@ -40,6 +61,26 @@ impl PortableConfig {
                 max_cover_bytes: 300 * 1024,
                 max_filename_len: 100,
             }
+        }
+    }
+}
+
+/// Headless mode configuration
+#[derive(Clone, Debug)]
+pub struct HeadlessConfig {
+    pub enabled: bool,
+    pub output_format: OutputFormat,
+    pub quiet: bool,
+    pub verbose: bool,
+}
+
+impl HeadlessConfig {
+    pub fn from_cli(cli: &Cli) -> Self {
+        Self {
+            enabled: cli.headless,
+            output_format: cli.output_format.clone(),
+            quiet: cli.quiet,
+            verbose: cli.verbose,
         }
     }
 }

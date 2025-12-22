@@ -7,8 +7,14 @@ mod metadata;
 mod file_utils;
 mod db;
 mod cli;
+mod logger;
 
-use crate::{cli::{Cli, PortableConfig}, db::DownloadDB, sources::spotify};
+use crate::{
+    cli::{Cli, HeadlessConfig, PortableConfig},
+    db::DownloadDB,
+    logger::Logger,
+    sources::spotify,
+};
 use clap::Parser;
 use rspotify::model::PlayableItem;
 use std::path::PathBuf;
@@ -16,10 +22,15 @@ use std::path::PathBuf;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let config = PortableConfig::from_cli(&cli);
+    let portable_config = PortableConfig::from_cli(&cli);
+    let headless_config = HeadlessConfig::from_cli(&cli);
+    let log = Logger::new(headless_config.clone());
 
-    if config.enabled {
-        println!("[portable mode] MP3 only, FAT32-safe names, shallow folders, small covers");
+    if portable_config.enabled {
+        log.info("[portable mode] MP3 only, FAT32-safe names, shallow folders, small covers");
+    }
+    if headless_config.enabled {
+        log.debug("[headless mode] Script-friendly output enabled");
     }
 
     // Base paths
@@ -36,8 +47,7 @@ async fn main() -> anyhow::Result<()> {
 
     match &cli.command {
         crate::cli::Commands::Album { link, format, quality: _ } => {
-            // Portable mode forces MP3
-            let actual_format = if config.enabled { "mp3".to_string() } else { format.clone() };
+            let actual_format = if portable_config.enabled { "mp3".to_string() } else { format.clone() };
 
             let album = spotify::fetch_album(&link).await?;
             let main_artist = album
@@ -47,9 +57,10 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|| "Unknown Artist".to_string());
             let album_name = album.name.clone();
 
-            // Portable: shallow folders (just music_path), Normal: artist/album nesting
-            let album_folder = if config.enabled {
-                file_utils::create_portable_folder(&music_path, &config)
+            log.info(&format!("Fetching album: {} by {}", album_name, main_artist));
+
+            let album_folder = if portable_config.enabled {
+                file_utils::create_portable_folder(&music_path, &portable_config)
             } else {
                 file_utils::create_album_folder(&music_path, &main_artist, &album_name)
             };
@@ -58,6 +69,7 @@ async fn main() -> anyhow::Result<()> {
                 if let Some(image) = album.images.get(0) {
                     let p = album_folder.join("cover.jpg");
                     if !p.exists() {
+                        log.debug("Downloading cover art...");
                         if let Ok(response) = reqwest::blocking::get(&image.url) {
                             if let Ok(bytes) = response.bytes() {
                                 let _ = std::fs::write(&p, &bytes);
@@ -70,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
 
+            let total_tracks = album.tracks.items.len();
             for (i, track) in album.tracks.items.iter().enumerate() {
                 let track_title = track.name.clone();
                 let track_artist = track
@@ -82,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
                     &track_artist,
                     &track_title,
                     &actual_format,
-                    &config,
+                    &portable_config,
                 );
 
                 let file_path = album_folder.join(&safe_file_name);
@@ -94,44 +107,54 @@ async fn main() -> anyhow::Result<()> {
                 };
 
                 if db.contains(&entry) {
-                    println!("Skipping: {} — {}", track_artist, track_title);
+                    log.track_skip(&track_artist, &track_title);
                     continue;
                 }
 
-                println!("Downloading: {} — {}", track_artist, track_title);
-                let query = format!("{} {}", track_artist, track_title);
+                log.track_start(&track_artist, &track_title);
+                log.debug(&format!("Track {}/{}", i + 1, total_tracks));
 
+                let query = format!("{} {}", track_artist, track_title);
                 let album_folder_clone = album_folder.clone();
                 let format_clone = actual_format.clone();
                 let query_clone = query.clone();
-                tokio::task::spawn_blocking(move || {
+
+                match tokio::task::spawn_blocking(move || {
                     downloader::download_track(&query_clone, &album_folder_clone, &format_clone)
-                }).await??;
-
-                metadata::tag_mp3(
-                    &file_path,
-                    &track_artist,
-                    &album_name,
-                    &track_title,
-                    (i + 1) as u32,
-                    cover_path.as_deref(),
-                    &config,
-                )?;
-
-                db.add(entry);
+                }).await? {
+                    Ok(_) => {
+                        metadata::tag_mp3(
+                            &file_path,
+                            &track_artist,
+                            &album_name,
+                            &track_title,
+                            (i + 1) as u32,
+                            cover_path.as_deref(),
+                            &portable_config,
+                        )?;
+                        log.track_complete(&track_artist, &track_title, &file_path.display().to_string());
+                        db.add(entry);
+                    }
+                    Err(e) => {
+                        log.error(&format!("Failed to download {} — {}: {}", track_artist, track_title, e));
+                    }
+                }
             }
 
-            println!("Album '{}' by {} finished.", album_name, main_artist);
+            log.album_complete(&album_name, &main_artist, total_tracks);
         }
 
         crate::cli::Commands::Playlist { link, format, quality: _ } => {
-            let actual_format = if config.enabled { "mp3".to_string() } else { format.clone() };
+            let actual_format = if portable_config.enabled { "mp3".to_string() } else { format.clone() };
 
             let playlist = spotify::fetch_playlist(&link).await?;
             let playlist_name = playlist.name.clone();
 
+            log.info(&format!("Fetching playlist: {}", playlist_name));
+
             std::fs::create_dir_all(&playlist_path)?;
             let mut downloaded_paths: Vec<PathBuf> = Vec::new();
+            let mut track_count = 0;
 
             for item in playlist.tracks.items.iter() {
                 let track_obj = match &item.track {
@@ -152,9 +175,8 @@ async fn main() -> anyhow::Result<()> {
                     PlayableItem::Episode(_) => continue,
                 };
 
-                // Portable: shallow folders, Normal: artist/Singles nesting
-                let output_folder = if config.enabled {
-                    file_utils::create_portable_folder(&playlist_path, &config)
+                let output_folder = if portable_config.enabled {
+                    file_utils::create_portable_folder(&playlist_path, &portable_config)
                 } else {
                     file_utils::create_album_folder(&playlist_path, &track_artist, "Singles")
                 };
@@ -163,7 +185,7 @@ async fn main() -> anyhow::Result<()> {
                     &track_artist,
                     &track_title,
                     &actual_format,
-                    &config,
+                    &portable_config,
                 );
                 let file_path = output_folder.join(&safe_file_name);
 
@@ -174,36 +196,44 @@ async fn main() -> anyhow::Result<()> {
                 };
 
                 if db.contains(&entry) {
-                    println!("Skipping: {} — {}", track_artist, track_title);
+                    log.track_skip(&track_artist, &track_title);
                     downloaded_paths.push(std::path::PathBuf::from(entry.path.clone()));
                     continue;
                 }
 
-                println!("Downloading: {} — {}", track_artist, track_title);
+                log.track_start(&track_artist, &track_title);
+
                 let query = format!("{} {}", track_artist, track_title);
                 let folder_clone = output_folder.clone();
                 let format_clone = actual_format.clone();
                 let query_clone = query.clone();
-                tokio::task::spawn_blocking(move || {
-                    downloader::download_track(&query_clone, &folder_clone, &format_clone)
-                })
-                .await??;
 
-                metadata::tag_mp3(
-                    &file_path,
-                    &track_artist,
-                    "Singles",
-                    &track_title,
-                    0,
-                    None,
-                    &config,
-                )?;
-                db.add(entry.clone());
-                downloaded_paths.push(file_path);
+                match tokio::task::spawn_blocking(move || {
+                    downloader::download_track(&query_clone, &folder_clone, &format_clone)
+                }).await? {
+                    Ok(_) => {
+                        metadata::tag_mp3(
+                            &file_path,
+                            &track_artist,
+                            "Singles",
+                            &track_title,
+                            0,
+                            None,
+                            &portable_config,
+                        )?;
+                        log.track_complete(&track_artist, &track_title, &file_path.display().to_string());
+                        db.add(entry.clone());
+                        downloaded_paths.push(file_path);
+                        track_count += 1;
+                    }
+                    Err(e) => {
+                        log.error(&format!("Failed to download {} — {}: {}", track_artist, track_title, e));
+                    }
+                }
             }
 
             file_utils::create_m3u(&playlist_name, &downloaded_paths, &playlist_path)?;
-            println!("Playlist '{}' with {} tracks finished.", playlist_name, downloaded_paths.len());
+            log.playlist_complete(&playlist_name, track_count);
         }
     }
 
