@@ -7,36 +7,72 @@ mod metadata;
 mod file_utils;
 mod db;
 mod cli;
+mod tui;
 
-use crate::{cli::{Cli, PortableConfig}, db::DownloadDB, sources::spotify};
+use crate::{cli::{Cli, PortableConfig}, db::DownloadDB, sources::spotify, tui::App};
 use clap::Parser;
+use crossterm::{
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::prelude::*;
 use rspotify::model::PlayableItem;
+use std::io::stdout;
 use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let config = PortableConfig::from_cli(&cli);
+
+    match &cli.command {
+        Some(cmd) => run_cli(cmd, &cli).await,
+        None => run_tui(),
+    }
+}
+
+fn run_tui() -> anyhow::Result<()> {
+    // Setup terminal
+    enable_raw_mode()?;
+    let mut stdout = stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    // Create app state
+    let mut app = App::new();
+
+    // Main loop
+    while app.running {
+        terminal.draw(|frame| tui::ui::draw(frame, &app))?;
+        tui::event::handle_events(&mut app)?;
+    }
+
+    // Restore terminal
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+
+    Ok(())
+}
+
+async fn run_cli(command: &cli::Commands, cli_args: &Cli) -> anyhow::Result<()> {
+    let config = PortableConfig::from_cli(cli_args);
 
     if config.enabled {
         println!("[portable mode] MP3 only, FAT32-safe names, shallow folders, small covers");
     }
 
-    // Base paths
     let music_path = PathBuf::from("data/music");
     let playlist_path = PathBuf::from("data/playlists");
     let cache_path = "data/cache/downloaded_songs.json";
 
-    // Ensure runtime directories exist
     std::fs::create_dir_all(&music_path)?;
     std::fs::create_dir_all(&playlist_path)?;
     std::fs::create_dir_all(std::path::Path::new("data/cache"))?;
 
     let mut db = DownloadDB::new(cache_path);
 
-    match &cli.command {
-        crate::cli::Commands::Album { link, format, quality: _ } => {
-            // Portable mode forces MP3
+    match command {
+        cli::Commands::Album { link, format, quality: _ } => {
             let actual_format = if config.enabled { "mp3".to_string() } else { format.clone() };
 
             let album = spotify::fetch_album(&link).await?;
@@ -47,7 +83,6 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|| "Unknown Artist".to_string());
             let album_name = album.name.clone();
 
-            // Portable: shallow folders (just music_path), Normal: artist/album nesting
             let album_folder = if config.enabled {
                 file_utils::create_portable_folder(&music_path, &config)
             } else {
@@ -87,7 +122,7 @@ async fn main() -> anyhow::Result<()> {
 
                 let file_path = album_folder.join(&safe_file_name);
 
-                let entry = crate::db::TrackEntry {
+                let entry = db::TrackEntry {
                     artist: track_artist.clone(),
                     title: track_title.clone(),
                     path: file_path.display().to_string(),
@@ -124,7 +159,7 @@ async fn main() -> anyhow::Result<()> {
             println!("Album '{}' by {} finished.", album_name, main_artist);
         }
 
-        crate::cli::Commands::Playlist { link, format, quality: _ } => {
+        cli::Commands::Playlist { link, format, quality: _ } => {
             let actual_format = if config.enabled { "mp3".to_string() } else { format.clone() };
 
             let playlist = spotify::fetch_playlist(&link).await?;
@@ -152,7 +187,6 @@ async fn main() -> anyhow::Result<()> {
                     PlayableItem::Episode(_) => continue,
                 };
 
-                // Portable: shallow folders, Normal: artist/Singles nesting
                 let output_folder = if config.enabled {
                     file_utils::create_portable_folder(&playlist_path, &config)
                 } else {
@@ -167,7 +201,7 @@ async fn main() -> anyhow::Result<()> {
                 );
                 let file_path = output_folder.join(&safe_file_name);
 
-                let entry = crate::db::TrackEntry {
+                let entry = db::TrackEntry {
                     artist: track_artist.clone(),
                     title: track_title.clone(),
                     path: file_path.display().to_string(),
@@ -208,4 +242,4 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
-} 
+}

@@ -7,11 +7,11 @@ use clap::{Parser, Subcommand};
 #[command(about = "Rust-based music downloader")]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
 
     /// Run in portable mode (constrained devices: 3DS, car stereos, old MP3 players)
     /// Forces MP3 format, FAT32-safe filenames, shallow folders, small cover art
-    #[arg(long = "portable", short = 'p', default_value_t = false)]
+    #[arg(long = "portable", short = 'p', default_value_t = false, global = true)]
     pub portable: bool,
 }
 
