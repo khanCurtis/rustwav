@@ -1,33 +1,62 @@
 # rustwav
 
-Rust-based music downloader and library manager. Downloads and organizes music from Spotify playlists/albums via YouTube with full metadata, album art, and ID3v2.3 tagging.
+Rust-based music downloader and library manager with a terminal UI. Downloads and organizes music from Spotify playlists/albums via YouTube with full metadata, album art, and ID3v2.3 tagging.
 
-## Branch: `master`
+## Features
 
-This is the **UI/Dashboard** branch - a web or TUI frontend for managing your music library.
+- **Terminal UI (TUI)** - Beautiful terminal interface built with Ratatui
+- **Spotify integration** - Download albums and playlists from Spotify links
+- **Download queue** - Visual queue management with progress bars
+- **Library browser** - Browse by artist, album, playlist
+- **Real-time progress** - Watch downloads as they happen
+- **Portable mode** - Optimized output for constrained devices
 
-### Goals
+## Installation
 
-- **Web or TUI frontend** - Visual interface for library management
-- **Consumes core as library** - No duplication of downloader logic
-- **Progress visualization** - Real-time download progress
-- **Library browser** - Browse, search, and manage downloaded music
-- **Stats and analytics** - Download history, library statistics
+```bash
+git clone https://github.com/khanCurtis/rustwav.git
+cd rustwav
+cargo build --release
+```
 
-### Planned Features
+## Requirements
 
-- **Download queue** - Visual queue management
-- **Library view** - Browse by artist, album, playlist
-- **Search** - Find tracks in your library
-- **Progress bars** - Real-time download progress
-- **History** - View past downloads and errors
+- Rust 1.70+
+- `yt-dlp` in PATH
+- Spotify API credentials:
+  ```bash
+  export RSPOTIFY_CLIENT_ID="your_client_id"
+  export RSPOTIFY_CLIENT_SECRET="your_client_secret"
+  ```
 
-### Architecture
+## Usage
+
+```bash
+# Launch the TUI
+rustwav
+
+# Or use CLI mode directly
+rustwav album <spotify-album-link>
+rustwav playlist <spotify-playlist-link>
+```
+
+## Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `q` | Quit |
+| `Tab` | Switch panels |
+| `Enter` | Select / Confirm |
+| `a` | Add album |
+| `p` | Add playlist |
+| `↑/↓` | Navigate |
+
+## Architecture
 
 ```
 ┌─────────────────────────────────────┐
 │           Dashboard UI              │
-│      (Web / TUI Frontend)           │
+│        (Ratatui TUI)                │
 ├─────────────────────────────────────┤
 │         rustwav-core                │
 │   (Library - no CLI, no I/O)        │
@@ -36,26 +65,10 @@ This is the **UI/Dashboard** branch - a web or TUI frontend for managing your mu
 └─────────────────────────────────────┘
 ```
 
-### Technology Options
-
-| Option | Pros | Cons |
-|--------|------|------|
-| **Ratatui (TUI)** | No browser needed, terminal native | Limited styling |
-| **Leptos (Web)** | Rich UI, Rust WASM | Requires browser |
-| **Tauri** | Desktop app, native feel | Larger binary |
-
-## Requirements
-
-- Rust 1.70+
-- `yt-dlp` in PATH
-- Spotify API credentials (`RSPOTIFY_CLIENT_ID`, `RSPOTIFY_CLIENT_SECRET`)
-
 ## Branch Structure
 
 | Branch | Purpose |
 |--------|---------|
-| `master` | UI / Dashboard (this branch) |
-| `cli` | Command-line interface |
+| `master` | TUI Dashboard (this branch) |
+| `cli` | Command-line interface only |
 | `headless` | Automation / server mode |
-
-For CLI usage, see the `cli` branch.
