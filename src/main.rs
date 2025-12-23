@@ -1,15 +1,20 @@
 mod sources {
-    pub mod spotify;
     pub mod models;
+    pub mod spotify;
 }
-mod downloader;
-mod metadata;
-mod file_utils;
-mod db;
 mod cli;
+mod db;
+mod downloader;
+mod file_utils;
+mod metadata;
 mod tui;
 
-use crate::{cli::{Cli, PortableConfig}, db::DownloadDB, sources::spotify, tui::{App, DownloadWorker}};
+use crate::{
+    cli::{Cli, PortableConfig},
+    db::DownloadDB,
+    sources::spotify,
+    tui::{App, DownloadWorker},
+};
 use clap::Parser;
 use crossterm::{
     execute,
@@ -23,6 +28,9 @@ use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load .env file if present (won't error if missing)
+    dotenvy::dotenv().ok();
+
     let cli = Cli::parse();
 
     match &cli.command {
@@ -86,13 +94,21 @@ async fn run_cli(command: &cli::Commands, cli_args: &Cli) -> anyhow::Result<()> 
     let mut db = DownloadDB::new(cache_path);
 
     match command {
-        cli::Commands::Album { link, format, quality: _ } => {
-            let actual_format = if config.enabled { "mp3".to_string() } else { format.clone() };
+        cli::Commands::Album {
+            link,
+            format,
+            quality: _,
+        } => {
+            let actual_format = if config.enabled {
+                "mp3".to_string()
+            } else {
+                format.clone()
+            };
 
-            let album = spotify::fetch_album(&link).await?;
+            let album = spotify::fetch_album(link).await?;
             let main_artist = album
                 .artists
-                .get(0)
+                .first()
                 .and_then(|a| a.name.clone().into())
                 .unwrap_or_else(|| "Unknown Artist".to_string());
             let album_name = album.name.clone();
@@ -104,7 +120,7 @@ async fn run_cli(command: &cli::Commands, cli_args: &Cli) -> anyhow::Result<()> 
             };
 
             let cover_path: Option<std::path::PathBuf> = {
-                if let Some(image) = album.images.get(0) {
+                if let Some(image) = album.images.first() {
                     let p = album_folder.join("cover.jpg");
                     if !p.exists() {
                         if let Ok(response) = reqwest::blocking::get(&image.url) {
@@ -113,7 +129,11 @@ async fn run_cli(command: &cli::Commands, cli_args: &Cli) -> anyhow::Result<()> 
                             }
                         }
                     }
-                    if p.exists() { Some(p) } else { None }
+                    if p.exists() {
+                        Some(p)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
@@ -123,7 +143,7 @@ async fn run_cli(command: &cli::Commands, cli_args: &Cli) -> anyhow::Result<()> 
                 let track_title = track.name.clone();
                 let track_artist = track
                     .artists
-                    .get(0)
+                    .first()
                     .and_then(|a| a.name.clone().into())
                     .unwrap_or_else(|| main_artist.clone());
 
@@ -155,7 +175,8 @@ async fn run_cli(command: &cli::Commands, cli_args: &Cli) -> anyhow::Result<()> 
                 let query_clone = query.clone();
                 tokio::task::spawn_blocking(move || {
                     downloader::download_track(&query_clone, &album_folder_clone, &format_clone)
-                }).await??;
+                })
+                .await??;
 
                 metadata::tag_mp3(
                     &file_path,
@@ -173,10 +194,18 @@ async fn run_cli(command: &cli::Commands, cli_args: &Cli) -> anyhow::Result<()> 
             println!("Album '{}' by {} finished.", album_name, main_artist);
         }
 
-        cli::Commands::Playlist { link, format, quality: _ } => {
-            let actual_format = if config.enabled { "mp3".to_string() } else { format.clone() };
+        cli::Commands::Playlist {
+            link,
+            format,
+            quality: _,
+        } => {
+            let actual_format = if config.enabled {
+                "mp3".to_string()
+            } else {
+                format.clone()
+            };
 
-            let playlist = spotify::fetch_playlist(&link).await?;
+            let playlist = spotify::fetch_playlist(link).await?;
             let playlist_name = playlist.name.clone();
 
             std::fs::create_dir_all(&playlist_path)?;
@@ -193,7 +222,7 @@ async fn run_cli(command: &cli::Commands, cli_args: &Cli) -> anyhow::Result<()> 
                         let title = track.name.clone();
                         let artist = track
                             .artists
-                            .get(0)
+                            .first()
                             .map(|a| a.name.clone())
                             .unwrap_or_else(|| "Unknown Artist".to_string());
                         (title, artist)
@@ -251,7 +280,11 @@ async fn run_cli(command: &cli::Commands, cli_args: &Cli) -> anyhow::Result<()> 
             }
 
             file_utils::create_m3u(&playlist_name, &downloaded_paths, &playlist_path)?;
-            println!("Playlist '{}' with {} tracks finished.", playlist_name, downloaded_paths.len());
+            println!(
+                "Playlist '{}' with {} tracks finished.",
+                playlist_name,
+                downloaded_paths.len()
+            );
         }
     }
 

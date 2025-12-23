@@ -28,6 +28,7 @@ pub struct QueueItem {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum JobStatus {
     Pending,
     Fetching,
@@ -49,7 +50,9 @@ pub struct App {
     pub library_selected: usize,
     pub status_message: String,
     pub db: DownloadDB,
+    #[allow(dead_code)]
     pub music_path: PathBuf,
+    #[allow(dead_code)]
     pub playlist_path: PathBuf,
     // Channels
     pub download_tx: mpsc::Sender<DownloadRequest>,
@@ -84,7 +87,8 @@ impl App {
             queue_selected: 0,
             library,
             library_selected: 0,
-            status_message: "Welcome! Press 'a' for album, 'p' for playlist, 'P' for portable mode".to_string(),
+            status_message: "Welcome! Press 'a' for album, 'p' for playlist, 'P' for portable mode"
+                .to_string(),
             db,
             music_path,
             playlist_path,
@@ -97,20 +101,31 @@ impl App {
     pub fn process_events(&mut self) {
         while let Ok(event) = self.event_rx.try_recv() {
             match event {
-                DownloadEvent::Started { id, name, total_tracks } => {
+                DownloadEvent::Started {
+                    id,
+                    name,
+                    total_tracks,
+                } => {
                     if let Some(item) = self.queue.iter_mut().find(|q| q.id == id) {
                         item.name = name;
                         item.status = JobStatus::Downloading;
                         item.progress = (0, total_tracks);
                     }
                 }
-                DownloadEvent::TrackStarted { id, artist, title, .. } => {
+                DownloadEvent::TrackStarted {
+                    id, artist, title, ..
+                } => {
                     if let Some(item) = self.queue.iter_mut().find(|q| q.id == id) {
                         item.current_track = Some(format!("{} - {}", artist, title));
                     }
                     self.status_message = format!("Downloading: {} - {}", artist, title);
                 }
-                DownloadEvent::TrackComplete { id, artist, title, path } => {
+                DownloadEvent::TrackComplete {
+                    id,
+                    artist,
+                    title,
+                    path,
+                } => {
                     if let Some(item) = self.queue.iter_mut().find(|q| q.id == id) {
                         item.progress.0 += 1;
                         item.current_track = None;
@@ -121,7 +136,11 @@ impl App {
                         title: title.clone(),
                         path,
                     };
-                    if !self.library.iter().any(|t| t.artist == artist && t.title == title) {
+                    if !self
+                        .library
+                        .iter()
+                        .any(|t| t.artist == artist && t.title == title)
+                    {
                         self.library.push(entry);
                     }
                     self.status_message = format!("Complete: {} - {}", artist, title);
@@ -132,7 +151,12 @@ impl App {
                     }
                     self.status_message = format!("Skipped (exists): {} - {}", artist, title);
                 }
-                DownloadEvent::TrackFailed { id, artist, title, error } => {
+                DownloadEvent::TrackFailed {
+                    id,
+                    artist,
+                    title,
+                    error,
+                } => {
                     if let Some(item) = self.queue.iter_mut().find(|q| q.id == id) {
                         item.progress.0 += 1;
                     }
@@ -182,7 +206,11 @@ impl App {
         self.input_mode = true;
         self.input.clear();
         self.link_type = LinkType::Album;
-        let mode = if self.portable_mode { " [portable]" } else { "" };
+        let mode = if self.portable_mode {
+            " [portable]"
+        } else {
+            ""
+        };
         self.status_message = format!("Enter Spotify album link{}:", mode);
     }
 
@@ -191,7 +219,11 @@ impl App {
         self.input_mode = true;
         self.input.clear();
         self.link_type = LinkType::Playlist;
-        let mode = if self.portable_mode { " [portable]" } else { "" };
+        let mode = if self.portable_mode {
+            " [portable]"
+        } else {
+            ""
+        };
         self.status_message = format!("Enter Spotify playlist link{}:", mode);
     }
 
@@ -220,7 +252,7 @@ impl App {
             LinkType::Album => {
                 self.queue.push(QueueItem {
                     id,
-                    name: format!("Fetching album..."),
+                    name: "Fetching album...".to_string(),
                     status: JobStatus::Fetching,
                     current_track: None,
                     progress: (0, 0),
@@ -233,7 +265,7 @@ impl App {
             LinkType::Playlist => {
                 self.queue.push(QueueItem {
                     id,
-                    name: format!("Fetching playlist..."),
+                    name: "Fetching playlist...".to_string(),
                     status: JobStatus::Fetching,
                     current_track: None,
                     progress: (0, 0),

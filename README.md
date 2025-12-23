@@ -23,11 +23,54 @@ cargo build --release
 
 - Rust 1.70+
 - `yt-dlp` in PATH
-- Spotify API credentials:
-  ```bash
-  export RSPOTIFY_CLIENT_ID="your_client_id"
-  export RSPOTIFY_CLIENT_SECRET="your_client_secret"
-  ```
+- `ffmpeg` in PATH (for audio extraction)
+- Spotify API credentials (see setup below)
+
+## Setup
+
+### 1. Install yt-dlp and ffmpeg
+
+**Arch Linux:**
+```bash
+sudo pacman -S yt-dlp ffmpeg
+```
+
+**Debian/Ubuntu:**
+```bash
+sudo apt install yt-dlp ffmpeg
+```
+
+**macOS:**
+```bash
+brew install yt-dlp ffmpeg
+```
+
+### 2. Get Spotify API Credentials
+
+1. Go to [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
+2. Log in and click **Create App**
+3. Fill in any name/description, set Redirect URI to `https://127.0.0.1:8080`
+4. Copy your **Client ID** and **Client Secret**
+
+### 3. Configure Credentials
+
+Create a `.env` file in the project root (recommended - keeps secrets out of your shell config):
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env` with your credentials:
+```
+RSPOTIFY_CLIENT_ID=your_client_id_here
+RSPOTIFY_CLIENT_SECRET=your_client_secret_here
+```
+
+Alternatively, export as environment variables:
+```bash
+export RSPOTIFY_CLIENT_ID="your_client_id"
+export RSPOTIFY_CLIENT_SECRET="your_client_secret"
+```
 
 ## Usage
 

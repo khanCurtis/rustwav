@@ -16,13 +16,43 @@ pub enum DownloadRequest {
 
 #[derive(Debug, Clone)]
 pub enum DownloadEvent {
-    Started { id: usize, name: String, total_tracks: usize },
-    TrackStarted { id: usize, artist: String, title: String, track_num: usize },
-    TrackComplete { id: usize, artist: String, title: String, path: String },
-    TrackSkipped { id: usize, artist: String, title: String },
-    TrackFailed { id: usize, artist: String, title: String, error: String },
-    Complete { id: usize, name: String },
-    Error { id: usize, error: String },
+    Started {
+        id: usize,
+        name: String,
+        total_tracks: usize,
+    },
+    #[allow(dead_code)]
+    TrackStarted {
+        id: usize,
+        artist: String,
+        title: String,
+        track_num: usize,
+    },
+    TrackComplete {
+        id: usize,
+        artist: String,
+        title: String,
+        path: String,
+    },
+    TrackSkipped {
+        id: usize,
+        artist: String,
+        title: String,
+    },
+    TrackFailed {
+        id: usize,
+        artist: String,
+        title: String,
+        error: String,
+    },
+    Complete {
+        id: usize,
+        name: String,
+    },
+    Error {
+        id: usize,
+        error: String,
+    },
 }
 
 pub struct DownloadWorker {
@@ -35,10 +65,7 @@ pub struct DownloadWorker {
 }
 
 impl DownloadWorker {
-    pub fn new(
-        rx: mpsc::Receiver<DownloadRequest>,
-        tx: mpsc::Sender<DownloadEvent>,
-    ) -> Self {
+    pub fn new(rx: mpsc::Receiver<DownloadRequest>, tx: mpsc::Sender<DownloadEvent>) -> Self {
         let music_path = PathBuf::from("data/music");
         let playlist_path = PathBuf::from("data/playlists");
         let _ = std::fs::create_dir_all(&music_path);
@@ -91,10 +118,13 @@ impl DownloadWorker {
         let album = match spotify::fetch_album(link).await {
             Ok(a) => a,
             Err(e) => {
-                let _ = self.tx.send(DownloadEvent::Error {
-                    id,
-                    error: format!("Failed to fetch album: {}", e),
-                }).await;
+                let _ = self
+                    .tx
+                    .send(DownloadEvent::Error {
+                        id,
+                        error: format!("Failed to fetch album: {}", e),
+                    })
+                    .await;
                 return;
             }
         };
@@ -107,11 +137,14 @@ impl DownloadWorker {
         let album_name = album.name.clone();
         let total_tracks = album.tracks.items.len();
 
-        let _ = self.tx.send(DownloadEvent::Started {
-            id,
-            name: format!("{} - {}", main_artist, album_name),
-            total_tracks,
-        }).await;
+        let _ = self
+            .tx
+            .send(DownloadEvent::Started {
+                id,
+                name: format!("{} - {}", main_artist, album_name),
+                total_tracks,
+            })
+            .await;
 
         let album_folder = if config.enabled {
             file_utils::create_portable_folder(&self.music_path, &config)
@@ -129,7 +162,11 @@ impl DownloadWorker {
                     }
                 }
             }
-            if p.exists() { Some(p) } else { None }
+            if p.exists() {
+                Some(p)
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -142,12 +179,8 @@ impl DownloadWorker {
                 .and_then(|a| a.name.clone().into())
                 .unwrap_or_else(|| main_artist.clone());
 
-            let safe_file_name = file_utils::build_filename(
-                &track_artist,
-                &track_title,
-                "mp3",
-                &config,
-            );
+            let safe_file_name =
+                file_utils::build_filename(&track_artist, &track_title, "mp3", &config);
             let file_path = album_folder.join(&safe_file_name);
 
             let entry = TrackEntry {
@@ -157,27 +190,35 @@ impl DownloadWorker {
             };
 
             if self.db.contains(&entry) {
-                let _ = self.tx.send(DownloadEvent::TrackSkipped {
-                    id,
-                    artist: track_artist,
-                    title: track_title,
-                }).await;
+                let _ = self
+                    .tx
+                    .send(DownloadEvent::TrackSkipped {
+                        id,
+                        artist: track_artist,
+                        title: track_title,
+                    })
+                    .await;
                 continue;
             }
 
-            let _ = self.tx.send(DownloadEvent::TrackStarted {
-                id,
-                artist: track_artist.clone(),
-                title: track_title.clone(),
-                track_num: i + 1,
-            }).await;
+            let _ = self
+                .tx
+                .send(DownloadEvent::TrackStarted {
+                    id,
+                    artist: track_artist.clone(),
+                    title: track_title.clone(),
+                    track_num: i + 1,
+                })
+                .await;
 
             let query = format!("{} {}", track_artist, track_title);
             let album_folder_clone = album_folder.clone();
 
             match tokio::task::spawn_blocking(move || {
                 downloader::download_track(&query, &album_folder_clone, "mp3")
-            }).await {
+            })
+            .await
+            {
                 Ok(Ok(_)) => {
                     if let Err(e) = metadata::tag_mp3(
                         &file_path,
@@ -188,46 +229,61 @@ impl DownloadWorker {
                         cover_path.as_deref(),
                         &config,
                     ) {
-                        let _ = self.tx.send(DownloadEvent::TrackFailed {
-                            id,
-                            artist: track_artist,
-                            title: track_title,
-                            error: format!("Tagging failed: {}", e),
-                        }).await;
+                        let _ = self
+                            .tx
+                            .send(DownloadEvent::TrackFailed {
+                                id,
+                                artist: track_artist,
+                                title: track_title,
+                                error: format!("Tagging failed: {}", e),
+                            })
+                            .await;
                         continue;
                     }
 
                     self.db.add(entry);
-                    let _ = self.tx.send(DownloadEvent::TrackComplete {
-                        id,
-                        artist: track_artist,
-                        title: track_title,
-                        path: file_path.display().to_string(),
-                    }).await;
+                    let _ = self
+                        .tx
+                        .send(DownloadEvent::TrackComplete {
+                            id,
+                            artist: track_artist,
+                            title: track_title,
+                            path: file_path.display().to_string(),
+                        })
+                        .await;
                 }
                 Ok(Err(e)) => {
-                    let _ = self.tx.send(DownloadEvent::TrackFailed {
-                        id,
-                        artist: track_artist,
-                        title: track_title,
-                        error: e.to_string(),
-                    }).await;
+                    let _ = self
+                        .tx
+                        .send(DownloadEvent::TrackFailed {
+                            id,
+                            artist: track_artist,
+                            title: track_title,
+                            error: e.to_string(),
+                        })
+                        .await;
                 }
                 Err(e) => {
-                    let _ = self.tx.send(DownloadEvent::TrackFailed {
-                        id,
-                        artist: track_artist,
-                        title: track_title,
-                        error: e.to_string(),
-                    }).await;
+                    let _ = self
+                        .tx
+                        .send(DownloadEvent::TrackFailed {
+                            id,
+                            artist: track_artist,
+                            title: track_title,
+                            error: e.to_string(),
+                        })
+                        .await;
                 }
             }
         }
 
-        let _ = self.tx.send(DownloadEvent::Complete {
-            id,
-            name: format!("{} - {}", main_artist, album_name),
-        }).await;
+        let _ = self
+            .tx
+            .send(DownloadEvent::Complete {
+                id,
+                name: format!("{} - {}", main_artist, album_name),
+            })
+            .await;
     }
 
     async fn process_playlist(&mut self, id: usize, link: &str, portable: bool) {
@@ -250,10 +306,13 @@ impl DownloadWorker {
         let playlist = match spotify::fetch_playlist(link).await {
             Ok(p) => p,
             Err(e) => {
-                let _ = self.tx.send(DownloadEvent::Error {
-                    id,
-                    error: format!("Failed to fetch playlist: {}", e),
-                }).await;
+                let _ = self
+                    .tx
+                    .send(DownloadEvent::Error {
+                        id,
+                        error: format!("Failed to fetch playlist: {}", e),
+                    })
+                    .await;
                 return;
             }
         };
@@ -261,11 +320,14 @@ impl DownloadWorker {
         let playlist_name = playlist.name.clone();
         let total_tracks = playlist.tracks.items.len();
 
-        let _ = self.tx.send(DownloadEvent::Started {
-            id,
-            name: playlist_name.clone(),
-            total_tracks,
-        }).await;
+        let _ = self
+            .tx
+            .send(DownloadEvent::Started {
+                id,
+                name: playlist_name.clone(),
+                total_tracks,
+            })
+            .await;
 
         let mut downloaded_paths: Vec<PathBuf> = Vec::new();
 
@@ -288,12 +350,8 @@ impl DownloadWorker {
                 file_utils::create_album_folder(&self.playlist_path, &track_artist, "Singles")
             };
 
-            let safe_file_name = file_utils::build_filename(
-                &track_artist,
-                &track_title,
-                "mp3",
-                &config,
-            );
+            let safe_file_name =
+                file_utils::build_filename(&track_artist, &track_title, "mp3", &config);
             let file_path = output_folder.join(&safe_file_name);
 
             let entry = TrackEntry {
@@ -303,28 +361,36 @@ impl DownloadWorker {
             };
 
             if self.db.contains(&entry) {
-                let _ = self.tx.send(DownloadEvent::TrackSkipped {
-                    id,
-                    artist: track_artist,
-                    title: track_title,
-                }).await;
+                let _ = self
+                    .tx
+                    .send(DownloadEvent::TrackSkipped {
+                        id,
+                        artist: track_artist,
+                        title: track_title,
+                    })
+                    .await;
                 downloaded_paths.push(file_path);
                 continue;
             }
 
-            let _ = self.tx.send(DownloadEvent::TrackStarted {
-                id,
-                artist: track_artist.clone(),
-                title: track_title.clone(),
-                track_num: i + 1,
-            }).await;
+            let _ = self
+                .tx
+                .send(DownloadEvent::TrackStarted {
+                    id,
+                    artist: track_artist.clone(),
+                    title: track_title.clone(),
+                    track_num: i + 1,
+                })
+                .await;
 
             let query = format!("{} {}", track_artist, track_title);
             let folder_clone = output_folder.clone();
 
             match tokio::task::spawn_blocking(move || {
                 downloader::download_track(&query, &folder_clone, "mp3")
-            }).await {
+            })
+            .await
+            {
                 Ok(Ok(_)) => {
                     if let Err(e) = metadata::tag_mp3(
                         &file_path,
@@ -335,48 +401,63 @@ impl DownloadWorker {
                         None,
                         &config,
                     ) {
-                        let _ = self.tx.send(DownloadEvent::TrackFailed {
-                            id,
-                            artist: track_artist,
-                            title: track_title,
-                            error: format!("Tagging failed: {}", e),
-                        }).await;
+                        let _ = self
+                            .tx
+                            .send(DownloadEvent::TrackFailed {
+                                id,
+                                artist: track_artist,
+                                title: track_title,
+                                error: format!("Tagging failed: {}", e),
+                            })
+                            .await;
                         continue;
                     }
 
                     self.db.add(entry);
                     downloaded_paths.push(file_path.clone());
-                    let _ = self.tx.send(DownloadEvent::TrackComplete {
-                        id,
-                        artist: track_artist,
-                        title: track_title,
-                        path: file_path.display().to_string(),
-                    }).await;
+                    let _ = self
+                        .tx
+                        .send(DownloadEvent::TrackComplete {
+                            id,
+                            artist: track_artist,
+                            title: track_title,
+                            path: file_path.display().to_string(),
+                        })
+                        .await;
                 }
                 Ok(Err(e)) => {
-                    let _ = self.tx.send(DownloadEvent::TrackFailed {
-                        id,
-                        artist: track_artist,
-                        title: track_title,
-                        error: e.to_string(),
-                    }).await;
+                    let _ = self
+                        .tx
+                        .send(DownloadEvent::TrackFailed {
+                            id,
+                            artist: track_artist,
+                            title: track_title,
+                            error: e.to_string(),
+                        })
+                        .await;
                 }
                 Err(e) => {
-                    let _ = self.tx.send(DownloadEvent::TrackFailed {
-                        id,
-                        artist: track_artist,
-                        title: track_title,
-                        error: e.to_string(),
-                    }).await;
+                    let _ = self
+                        .tx
+                        .send(DownloadEvent::TrackFailed {
+                            id,
+                            artist: track_artist,
+                            title: track_title,
+                            error: e.to_string(),
+                        })
+                        .await;
                 }
             }
         }
 
         let _ = file_utils::create_m3u(&playlist_name, &downloaded_paths, &self.playlist_path);
 
-        let _ = self.tx.send(DownloadEvent::Complete {
-            id,
-            name: playlist_name,
-        }).await;
+        let _ = self
+            .tx
+            .send(DownloadEvent::Complete {
+                id,
+                name: playlist_name,
+            })
+            .await;
     }
 }
