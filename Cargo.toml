@@ -11,6 +11,7 @@ serde_json = "1.0"
 reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"] }
 tokio = { version = "1.41", features = ["full"] }
 rspotify = "0.12"
+futures = "0.3"
 dirs = "5.0"
 anyhow = "1.0"
 id3 = "1.16.3"

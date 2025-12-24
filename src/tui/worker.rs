@@ -384,6 +384,7 @@ impl DownloadWorker {
         self.send_log(id, "Fetching playlist info from Spotify...".to_string())
             .await;
 
+        // Fetch playlist metadata
         let playlist = match spotify::fetch_playlist(link).await {
             Ok(p) => p,
             Err(e) => {
@@ -399,7 +400,26 @@ impl DownloadWorker {
         };
 
         let playlist_name = playlist.name.clone();
-        let total_tracks = playlist.tracks.items.len();
+
+        // Fetch ALL playlist items with pagination (no 100 track limit)
+        self.send_log(id, "Fetching all playlist tracks...".to_string())
+            .await;
+
+        let all_items = match spotify::fetch_all_playlist_items(link).await {
+            Ok(items) => items,
+            Err(e) => {
+                let _ = self
+                    .tx
+                    .send(DownloadEvent::Error {
+                        id,
+                        error: format!("Failed to fetch playlist tracks: {}", e),
+                    })
+                    .await;
+                return;
+            }
+        };
+
+        let total_tracks = all_items.len();
 
         self.send_log(
             id,
@@ -421,7 +441,7 @@ impl DownloadWorker {
 
         let mut downloaded_paths: Vec<PathBuf> = Vec::new();
 
-        for (i, item) in playlist.tracks.items.iter().enumerate() {
+        for (i, item) in all_items.iter().enumerate() {
             let track = match &item.track {
                 Some(rspotify::model::PlayableItem::Track(t)) => t,
                 _ => continue,
@@ -434,10 +454,14 @@ impl DownloadWorker {
                 .map(|a| a.name.clone())
                 .unwrap_or_else(|| "Unknown Artist".to_string());
 
+            // Get album name from track metadata
+            let album_name = track.album.name.clone();
+
+            // Use music path (like albums) and organize by artist/album
             let output_folder = if config.enabled {
-                file_utils::create_portable_folder(&self.playlist_path, &config)
+                file_utils::create_portable_folder(&self.music_path, &config)
             } else {
-                file_utils::create_album_folder(&self.playlist_path, &track_artist, "Singles")
+                file_utils::create_album_folder(&self.music_path, &track_artist, &album_name)
             };
 
             let safe_file_name =
@@ -498,9 +522,9 @@ impl DownloadWorker {
                     if let Err(e) = metadata::tag_audio(
                         &file_path,
                         &track_artist,
-                        "Singles",
+                        &album_name,
                         &track_title,
-                        0,
+                        track.track_number,
                         None,
                         &config,
                     ) {
