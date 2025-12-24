@@ -9,7 +9,11 @@ pub fn handle_events(app: &mut App) -> anyhow::Result<()> {
             if app.input_mode {
                 handle_input_mode(app, key.code);
             } else {
-                handle_normal_mode(app, key.code, key.modifiers);
+                match app.view {
+                    View::LinkSettings => handle_settings_mode(app, key.code),
+                    View::Logs => handle_logs_mode(app, key.code, key.modifiers),
+                    _ => handle_normal_mode(app, key.code, key.modifiers),
+                }
             }
         }
     }
@@ -30,6 +34,38 @@ fn handle_input_mode(app: &mut App, key: KeyCode) {
     }
 }
 
+fn handle_settings_mode(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Enter => app.submit_settings(),
+        KeyCode::Esc => app.cancel_settings(),
+        KeyCode::Up | KeyCode::Char('k') => app.settings_up(),
+        KeyCode::Down | KeyCode::Char('j') => app.settings_down(),
+        KeyCode::Left | KeyCode::Char('h') => app.settings_left(),
+        KeyCode::Right | KeyCode::Char('l') => app.settings_right(),
+        _ => {}
+    }
+}
+
+fn handle_logs_mode(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
+    match key {
+        KeyCode::Char('q') => app.quit(),
+        KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => app.quit(),
+        KeyCode::Tab => app.next_view(),
+        KeyCode::Up | KeyCode::Char('k') => app.logs_up(),
+        KeyCode::Down | KeyCode::Char('j') => app.logs_down(),
+        KeyCode::Char('g') => app.logs_top(),
+        KeyCode::Char('G') => app.logs_bottom(),
+        KeyCode::Home => app.logs_top(),
+        KeyCode::End => app.logs_bottom(),
+        // Allow switching to add album/playlist from logs view
+        KeyCode::Char('a') => app.start_add_album(),
+        KeyCode::Char('p') => app.start_add_playlist(),
+        KeyCode::Char('P') => app.toggle_portable(),
+        KeyCode::Char('r') => app.refresh_library(),
+        _ => {}
+    }
+}
+
 fn handle_normal_mode(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
     match key {
         KeyCode::Char('q') => app.quit(),
@@ -38,6 +74,7 @@ fn handle_normal_mode(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('a') => app.start_add_album(),
         KeyCode::Char('p') => app.start_add_playlist(),
         KeyCode::Char('P') => app.toggle_portable(),
+        KeyCode::Char('l') => app.show_logs(),
         KeyCode::Up | KeyCode::Char('k') => match app.view {
             View::Queue => app.queue_up(),
             View::Library => app.library_up(),

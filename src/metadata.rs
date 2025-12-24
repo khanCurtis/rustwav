@@ -1,13 +1,14 @@
 use anyhow::Context;
 use id3::{frame::Picture, Tag, TagLike, Version};
-use image::{ImageReader, GenericImageView, ImageEncoder};
 use image::codecs::jpeg::JpegEncoder;
+use image::{GenericImageView, ImageEncoder, ImageReader};
 use std::path::Path;
 
 use crate::cli::PortableConfig;
 
-/// Tag an MP3 (ID3v2.3), optionally embed cover art from `cover_path` if present.
-pub fn tag_mp3(
+/// Tag an audio file with ID3v2.3, optionally embed cover art from `cover_path` if present.
+/// Automatically detects WAV files and uses the appropriate writing method.
+pub fn tag_audio(
     file_path: &Path,
     artist: &str,
     album: &str,
@@ -36,7 +37,24 @@ pub fn tag_mp3(
         }
     }
 
-    tag.write_to_path(file_path, Version::Id3v23).context("writing ID3 tag")?;
+    // Use format-specific writing method based on file extension
+    let extension = file_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+
+    #[allow(deprecated)]
+    match extension.as_deref() {
+        Some("wav") => tag
+            .write_to_wav_path(file_path, Version::Id3v23)
+            .context("writing ID3 tag to WAV")?,
+        Some("aif" | "aiff") => tag
+            .write_to_aiff_path(file_path, Version::Id3v23)
+            .context("writing ID3 tag to AIFF")?,
+        _ => tag
+            .write_to_path(file_path, Version::Id3v23)
+            .context("writing ID3 tag")?,
+    }
 
     Ok(())
 }

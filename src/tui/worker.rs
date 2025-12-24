@@ -10,8 +10,20 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub enum DownloadRequest {
-    Album { link: String, portable: bool },
-    Playlist { link: String, portable: bool },
+    Album {
+        id: usize,
+        link: String,
+        portable: bool,
+        format: String,
+        quality: String,
+    },
+    Playlist {
+        id: usize,
+        link: String,
+        portable: bool,
+        format: String,
+        quality: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +65,10 @@ pub enum DownloadEvent {
         id: usize,
         error: String,
     },
+    LogLine {
+        id: usize,
+        line: String,
+    },
 }
 
 pub struct DownloadWorker {
@@ -61,7 +77,6 @@ pub struct DownloadWorker {
     music_path: PathBuf,
     playlist_path: PathBuf,
     db: DownloadDB,
-    job_id: usize,
 }
 
 impl DownloadWorker {
@@ -78,27 +93,48 @@ impl DownloadWorker {
             music_path,
             playlist_path,
             db: DownloadDB::new("data/cache/downloaded_songs.json"),
-            job_id: 0,
         }
     }
 
     pub async fn run(mut self) {
         while let Some(request) = self.rx.recv().await {
-            self.job_id += 1;
-            let id = self.job_id;
-
             match request {
-                DownloadRequest::Album { link, portable } => {
-                    self.process_album(id, &link, portable).await;
+                DownloadRequest::Album {
+                    id,
+                    link,
+                    portable,
+                    format,
+                    quality,
+                } => {
+                    self.process_album(id, &link, portable, &format, &quality)
+                        .await;
                 }
-                DownloadRequest::Playlist { link, portable } => {
-                    self.process_playlist(id, &link, portable).await;
+                DownloadRequest::Playlist {
+                    id,
+                    link,
+                    portable,
+                    format,
+                    quality,
+                } => {
+                    self.process_playlist(id, &link, portable, &format, &quality)
+                        .await;
                 }
             }
         }
     }
 
-    async fn process_album(&mut self, id: usize, link: &str, portable: bool) {
+    async fn send_log(&self, id: usize, line: String) {
+        let _ = self.tx.send(DownloadEvent::LogLine { id, line }).await;
+    }
+
+    async fn process_album(
+        &mut self,
+        id: usize,
+        link: &str,
+        portable: bool,
+        format: &str,
+        quality: &str,
+    ) {
         let config = if portable {
             PortableConfig {
                 enabled: true,
@@ -114,6 +150,12 @@ impl DownloadWorker {
                 max_filename_len: 100,
             }
         };
+
+        // Use mp3 for portable mode, otherwise use selected format
+        let actual_format = if portable { "mp3" } else { format };
+
+        self.send_log(id, "Fetching album info from Spotify...".to_string())
+            .await;
 
         let album = match spotify::fetch_album(link).await {
             Ok(a) => a,
@@ -137,6 +179,15 @@ impl DownloadWorker {
         let album_name = album.name.clone();
         let total_tracks = album.tracks.items.len();
 
+        self.send_log(
+            id,
+            format!(
+                "Found: {} - {} ({} tracks, format: {}, quality: {})",
+                main_artist, album_name, total_tracks, actual_format, quality
+            ),
+        )
+        .await;
+
         let _ = self
             .tx
             .send(DownloadEvent::Started {
@@ -156,6 +207,8 @@ impl DownloadWorker {
         let cover_path: Option<PathBuf> = if let Some(image) = album.images.first() {
             let p = album_folder.join("cover.jpg");
             if !p.exists() {
+                self.send_log(id, "Downloading cover art...".to_string())
+                    .await;
                 if let Ok(response) = reqwest::get(&image.url).await {
                     if let Ok(bytes) = response.bytes().await {
                         let _ = std::fs::write(&p, &bytes);
@@ -180,7 +233,7 @@ impl DownloadWorker {
                 .unwrap_or_else(|| main_artist.clone());
 
             let safe_file_name =
-                file_utils::build_filename(&track_artist, &track_title, "mp3", &config);
+                file_utils::build_filename(&track_artist, &track_title, actual_format, &config);
             let file_path = album_folder.join(&safe_file_name);
 
             let entry = TrackEntry {
@@ -212,15 +265,30 @@ impl DownloadWorker {
                 .await;
 
             let query = format!("{} {}", track_artist, track_title);
-            let album_folder_clone = album_folder.clone();
+            let file_path_clone = file_path.clone();
+            let format_clone = actual_format.to_string();
+            let quality_clone = quality.to_string();
+            let tx_clone = self.tx.clone();
 
             match tokio::task::spawn_blocking(move || {
-                downloader::download_track(&query, &album_folder_clone, "mp3")
+                downloader::download_track_with_output(
+                    &query,
+                    &file_path_clone,
+                    &format_clone,
+                    &quality_clone,
+                    move |line| {
+                        // Send log lines from the blocking context
+                        let tx = tx_clone.clone();
+                        let line = line.to_string();
+                        // We can't await here, so we use try_send or spawn
+                        let _ = tx.blocking_send(DownloadEvent::LogLine { id, line });
+                    },
+                )
             })
             .await
             {
                 Ok(Ok(_)) => {
-                    if let Err(e) = metadata::tag_mp3(
+                    if let Err(e) = metadata::tag_audio(
                         &file_path,
                         &track_artist,
                         &album_name,
@@ -286,7 +354,14 @@ impl DownloadWorker {
             .await;
     }
 
-    async fn process_playlist(&mut self, id: usize, link: &str, portable: bool) {
+    async fn process_playlist(
+        &mut self,
+        id: usize,
+        link: &str,
+        portable: bool,
+        format: &str,
+        quality: &str,
+    ) {
         let config = if portable {
             PortableConfig {
                 enabled: true,
@@ -302,6 +377,12 @@ impl DownloadWorker {
                 max_filename_len: 100,
             }
         };
+
+        // Use mp3 for portable mode, otherwise use selected format
+        let actual_format = if portable { "mp3" } else { format };
+
+        self.send_log(id, "Fetching playlist info from Spotify...".to_string())
+            .await;
 
         let playlist = match spotify::fetch_playlist(link).await {
             Ok(p) => p,
@@ -319,6 +400,15 @@ impl DownloadWorker {
 
         let playlist_name = playlist.name.clone();
         let total_tracks = playlist.tracks.items.len();
+
+        self.send_log(
+            id,
+            format!(
+                "Found: {} ({} tracks, format: {}, quality: {})",
+                playlist_name, total_tracks, actual_format, quality
+            ),
+        )
+        .await;
 
         let _ = self
             .tx
@@ -351,7 +441,7 @@ impl DownloadWorker {
             };
 
             let safe_file_name =
-                file_utils::build_filename(&track_artist, &track_title, "mp3", &config);
+                file_utils::build_filename(&track_artist, &track_title, actual_format, &config);
             let file_path = output_folder.join(&safe_file_name);
 
             let entry = TrackEntry {
@@ -384,15 +474,28 @@ impl DownloadWorker {
                 .await;
 
             let query = format!("{} {}", track_artist, track_title);
-            let folder_clone = output_folder.clone();
+            let file_path_clone = file_path.clone();
+            let format_clone = actual_format.to_string();
+            let quality_clone = quality.to_string();
+            let tx_clone = self.tx.clone();
 
             match tokio::task::spawn_blocking(move || {
-                downloader::download_track(&query, &folder_clone, "mp3")
+                downloader::download_track_with_output(
+                    &query,
+                    &file_path_clone,
+                    &format_clone,
+                    &quality_clone,
+                    move |line| {
+                        let tx = tx_clone.clone();
+                        let line = line.to_string();
+                        let _ = tx.blocking_send(DownloadEvent::LogLine { id, line });
+                    },
+                )
             })
             .await
             {
                 Ok(Ok(_)) => {
-                    if let Err(e) = metadata::tag_mp3(
+                    if let Err(e) = metadata::tag_audio(
                         &file_path,
                         &track_artist,
                         "Singles",

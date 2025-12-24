@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use super::app::{App, JobStatus, View};
+use super::app::{App, JobStatus, SettingsField, View, FORMAT_OPTIONS, QUALITY_OPTIONS};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -24,17 +24,23 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
-    let queue_count = app.queue.iter().filter(|q| q.status != JobStatus::Complete).count();
+    let queue_count = app
+        .queue
+        .iter()
+        .filter(|q| q.status != JobStatus::Complete)
+        .count();
     let titles = vec![
         "Main".to_string(),
         format!("Queue ({})", queue_count),
         format!("Library ({})", app.library.len()),
+        format!("Logs ({})", app.download_logs.len()),
     ];
 
     let selected = match app.view {
-        View::Main | View::AddLink => 0,
+        View::Main | View::AddLink | View::LinkSettings => 0,
         View::Queue => 1,
         View::Library => 2,
+        View::Logs => 3,
     };
 
     let portable_indicator = if app.portable_mode { " [P]" } else { "" };
@@ -44,7 +50,11 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         .block(Block::default().borders(Borders::ALL).title(title))
         .select(selected)
         .style(Style::default().fg(Color::White))
-        .highlight_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
 
     frame.render_widget(tabs, area);
 }
@@ -53,8 +63,10 @@ fn draw_main(frame: &mut Frame, app: &App, area: Rect) {
     match app.view {
         View::Main => draw_main_view(frame, app, area),
         View::AddLink => draw_add_link_view(frame, app, area),
+        View::LinkSettings => draw_link_settings_view(frame, app, area),
         View::Queue => draw_queue_view(frame, app, area),
         View::Library => draw_library_view(frame, app, area),
+        View::Logs => draw_logs_view(frame, app, area),
     }
 }
 
@@ -69,7 +81,9 @@ fn draw_main_view(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
         Line::from(Span::styled(
             "  Welcome to rustwav!",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from("  Keyboard shortcuts:"),
@@ -88,6 +102,10 @@ fn draw_main_view(frame: &mut Frame, app: &App, area: Rect) {
             portable_status,
         ]),
         Line::from(vec![
+            Span::styled("    l", Style::default().fg(Color::Yellow)),
+            Span::raw("  View download logs"),
+        ]),
+        Line::from(vec![
             Span::styled("  Tab", Style::default().fg(Color::Yellow)),
             Span::raw("  Switch views"),
         ]),
@@ -101,8 +119,8 @@ fn draw_main_view(frame: &mut Frame, app: &App, area: Rect) {
         ]),
     ];
 
-    let paragraph = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).title(" Home "));
+    let paragraph =
+        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" Home "));
 
     frame.render_widget(paragraph, area);
 }
@@ -110,36 +128,150 @@ fn draw_main_view(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_add_link_view(frame: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-        ])
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
         .margin(2)
         .split(area);
 
     let input = Paragraph::new(app.input.as_str())
         .style(Style::default().fg(Color::Yellow))
-        .block(Block::default().borders(Borders::ALL).title(" Spotify Link "));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Spotify Link "),
+        );
 
     frame.render_widget(input, chunks[0]);
 
-    let help = Paragraph::new("Press Enter to submit, Esc to cancel")
+    let help = Paragraph::new("Press Enter to continue to settings, Esc to cancel")
         .style(Style::default().fg(Color::DarkGray));
 
     frame.render_widget(help, chunks[1]);
 
     // Show cursor
-    frame.set_cursor_position((
-        chunks[0].x + app.input.len() as u16 + 1,
-        chunks[0].y + 1,
-    ));
+    frame.set_cursor_position((chunks[0].x + app.input.len() as u16 + 1, chunks[0].y + 1));
+}
+
+fn draw_link_settings_view(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Download Settings ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // Spacing
+            Constraint::Length(2), // Format row
+            Constraint::Length(2), // Quality row
+            Constraint::Length(2), // Spacing
+            Constraint::Min(0),    // Help text
+        ])
+        .margin(1)
+        .split(inner);
+
+    // Format selection
+    let format_active = app.settings_field == SettingsField::Format;
+    let format_label_style = if format_active {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    let mut format_spans = vec![Span::styled("  Format:   ", format_label_style)];
+
+    for (i, fmt) in FORMAT_OPTIONS.iter().enumerate() {
+        let is_selected = i == app.selected_format;
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else if format_active {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+        format_spans.push(Span::styled(format!(" {} ", fmt), style));
+    }
+
+    // Show portable mode note
+    if app.portable_mode {
+        format_spans.push(Span::styled(
+            "  (portable: mp3 only)",
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+
+    let format_line = Paragraph::new(Line::from(format_spans));
+    frame.render_widget(format_line, chunks[1]);
+
+    // Quality selection
+    let quality_active = app.settings_field == SettingsField::Quality;
+    let quality_label_style = if quality_active {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    let mut quality_spans = vec![Span::styled("  Quality:  ", quality_label_style)];
+
+    for (i, q) in QUALITY_OPTIONS.iter().enumerate() {
+        let is_selected = i == app.selected_quality;
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else if quality_active {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+        quality_spans.push(Span::styled(format!(" {} ", q), style));
+    }
+
+    let quality_line = Paragraph::new(Line::from(quality_spans));
+    frame.render_widget(quality_line, chunks[2]);
+
+    // Help text
+    let help_text = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  ↑/↓", Style::default().fg(Color::Yellow)),
+            Span::raw("  Select option    "),
+            Span::styled("←/→", Style::default().fg(Color::Yellow)),
+            Span::raw("  Change value"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Enter", Style::default().fg(Color::Yellow)),
+            Span::raw("  Start download   "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw("  Cancel"),
+        ]),
+    ];
+
+    let help = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(help, chunks[4]);
 }
 
 fn draw_queue_view(frame: &mut Frame, app: &App, area: Rect) {
     if app.queue.is_empty() {
-        let empty = Paragraph::new("  No downloads in queue.\n\n  Press 'a' to add album or 'p' for playlist.")
-            .style(Style::default().fg(Color::DarkGray))
-            .block(Block::default().borders(Borders::ALL).title(" Download Queue "));
+        let empty = Paragraph::new(
+            "  No downloads in queue.\n\n  Press 'a' to add album or 'p' for playlist.",
+        )
+        .style(Style::default().fg(Color::DarkGray))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Download Queue "),
+        );
         frame.render_widget(empty, area);
         return;
     }
@@ -179,7 +311,10 @@ fn draw_queue_view(frame: &mut Frame, app: &App, area: Rect) {
             };
 
             let content = Line::from(vec![
-                Span::styled(format!(" {} ", status_icon), Style::default().fg(status_color)),
+                Span::styled(
+                    format!(" {} ", status_icon),
+                    Style::default().fg(status_color),
+                ),
                 Span::raw(&item.name),
                 Span::styled(progress_str, Style::default().fg(Color::DarkGray)),
             ]);
@@ -188,13 +323,20 @@ fn draw_queue_view(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Download Queue "));
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Download Queue "),
+    );
 
     frame.render_widget(list, chunks[0]);
 
     // Current download progress
-    if let Some(current) = app.queue.iter().find(|q| q.status == JobStatus::Downloading) {
+    if let Some(current) = app
+        .queue
+        .iter()
+        .find(|q| q.status == JobStatus::Downloading)
+    {
         let progress = if current.progress.1 > 0 {
             (current.progress.0 as f64 / current.progress.1 as f64).min(1.0)
         } else {
@@ -207,7 +349,10 @@ fn draw_queue_view(frame: &mut Frame, app: &App, area: Rect) {
             .block(Block::default().borders(Borders::ALL).title(" Progress "))
             .gauge_style(Style::default().fg(Color::Cyan))
             .ratio(progress)
-            .label(format!("{} ({}/{})", label, current.progress.0, current.progress.1));
+            .label(format!(
+                "{} ({}/{})",
+                label, current.progress.0, current.progress.1
+            ));
 
         frame.render_widget(gauge, chunks[1]);
     } else {
@@ -220,9 +365,15 @@ fn draw_queue_view(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_library_view(frame: &mut Frame, app: &App, area: Rect) {
     if app.library.is_empty() {
-        let empty = Paragraph::new("  No tracks downloaded yet.\n\n  Add an album or playlist to get started!")
-            .style(Style::default().fg(Color::DarkGray))
-            .block(Block::default().borders(Borders::ALL).title(" Library (0 tracks) "));
+        let empty = Paragraph::new(
+            "  No tracks downloaded yet.\n\n  Add an album or playlist to get started!",
+        )
+        .style(Style::default().fg(Color::DarkGray))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Library (0 tracks) "),
+        );
         frame.render_widget(empty, area);
         return;
     }
@@ -250,10 +401,89 @@ fn draw_library_view(frame: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let title = format!(" Library ({} tracks) ", app.library.len());
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title));
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
 
     frame.render_widget(list, area);
+}
+
+fn draw_logs_view(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" Download Logs ({}) ", app.download_logs.len()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.download_logs.is_empty() {
+        let empty = Paragraph::new("  No logs yet. Start a download to see output here.")
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(empty, inner);
+        return;
+    }
+
+    // Calculate visible lines
+    let visible_height = inner.height as usize;
+    let total_logs = app.download_logs.len();
+
+    // Determine scroll position
+    let start_idx = if total_logs <= visible_height {
+        0
+    } else {
+        app.log_scroll
+            .min(total_logs.saturating_sub(visible_height))
+    };
+
+    let items: Vec<ListItem> = app
+        .download_logs
+        .iter()
+        .skip(start_idx)
+        .take(visible_height)
+        .map(|line| {
+            // Color code different log types
+            let style = if line.contains("ERROR") || line.contains("FAILED") {
+                Style::default().fg(Color::Red)
+            } else if line.contains("Complete") || line.contains("Finished") {
+                Style::default().fg(Color::Green)
+            } else if line.contains("Skipped") {
+                Style::default().fg(Color::Yellow)
+            } else if line.contains("Downloading") || line.contains("[download]") {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            ListItem::new(Line::from(Span::styled(format!(" {}", line), style)))
+        })
+        .collect();
+
+    let list = List::new(items);
+    frame.render_widget(list, inner);
+
+    // Scroll indicator
+    if total_logs > visible_height {
+        let scroll_info = format!(
+            " [{}-{}/{}] {}",
+            start_idx + 1,
+            (start_idx + visible_height).min(total_logs),
+            total_logs,
+            if app.log_auto_scroll {
+                "[auto-scroll]"
+            } else {
+                "[manual]"
+            }
+        );
+        let scroll_indicator = Paragraph::new(scroll_info)
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(ratatui::layout::Alignment::Right);
+
+        // Draw at bottom right of the area
+        let indicator_area = Rect {
+            x: area.x,
+            y: area.y + area.height - 1,
+            width: area.width - 1,
+            height: 1,
+        };
+        frame.render_widget(scroll_indicator, indicator_area);
+    }
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {

@@ -170,15 +170,15 @@ async fn run_cli(command: &cli::Commands, cli_args: &Cli) -> anyhow::Result<()> 
                 println!("Downloading: {} — {}", track_artist, track_title);
                 let query = format!("{} {}", track_artist, track_title);
 
-                let album_folder_clone = album_folder.clone();
+                let file_path_clone = file_path.clone();
                 let format_clone = actual_format.clone();
                 let query_clone = query.clone();
                 tokio::task::spawn_blocking(move || {
-                    downloader::download_track(&query_clone, &album_folder_clone, &format_clone)
+                    downloader::download_track(&query_clone, &file_path_clone, &format_clone)
                 })
                 .await??;
 
-                metadata::tag_mp3(
+                metadata::tag_audio(
                     &file_path,
                     &track_artist,
                     &album_name,
@@ -258,15 +258,15 @@ async fn run_cli(command: &cli::Commands, cli_args: &Cli) -> anyhow::Result<()> 
 
                 println!("Downloading: {} — {}", track_artist, track_title);
                 let query = format!("{} {}", track_artist, track_title);
-                let folder_clone = output_folder.clone();
+                let file_path_clone = file_path.clone();
                 let format_clone = actual_format.clone();
                 let query_clone = query.clone();
                 tokio::task::spawn_blocking(move || {
-                    downloader::download_track(&query_clone, &folder_clone, &format_clone)
+                    downloader::download_track(&query_clone, &file_path_clone, &format_clone)
                 })
                 .await??;
 
-                metadata::tag_mp3(
+                metadata::tag_audio(
                     &file_path,
                     &track_artist,
                     "Singles",
