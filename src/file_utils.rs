@@ -107,25 +107,50 @@ pub fn build_filename(artist: &str, title: &str, ext: &str, config: &PortableCon
     }
 }
 
-pub fn create_m3u(playlist_name: &str, tracks: &[PathBuf], out_dir: &Path) -> anyhow::Result<()> {
-    std::fs::create_dir_all(out_dir)?;
-    let playlist_file = out_dir.join(format!("{}.m3u", sanitize_filename(playlist_name)));
+/// Calculate relative path from one directory to a file
+fn relative_path_from(from_dir: &Path, to_file: &Path) -> PathBuf {
+    // Canonicalize both paths to get absolute paths
+    let from_abs = std::fs::canonicalize(from_dir).unwrap_or_else(|_| from_dir.to_path_buf());
+    let to_abs = std::fs::canonicalize(to_file).unwrap_or_else(|_| to_file.to_path_buf());
+
+    // Find common ancestor
+    let from_parts: Vec<_> = from_abs.components().collect();
+    let to_parts: Vec<_> = to_abs.components().collect();
+
+    let mut common_len = 0;
+    for (a, b) in from_parts.iter().zip(to_parts.iter()) {
+        if a == b {
+            common_len += 1;
+        } else {
+            break;
+        }
+    }
+
+    // Build relative path: go up from 'from_dir' then down to 'to_file'
+    let mut result = PathBuf::new();
+    for _ in common_len..from_parts.len() {
+        result.push("..");
+    }
+    for part in &to_parts[common_len..] {
+        result.push(part);
+    }
+
+    result
+}
+
+pub fn create_m3u(playlist_name: &str, tracks: &[PathBuf], playlist_dir: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(playlist_dir)?;
+    let playlist_file = playlist_dir.join(format!("{}.m3u", sanitize_filename(playlist_name)));
     let file = File::create(&playlist_file)?;
     let mut writer = BufWriter::new(file);
 
-   // write header
-   writeln!(writer, "#EXTM3U")?;
+    // write header
+    writeln!(writer, "#EXTM3U")?;
 
-   for track in tracks {
-       // attempt to write path relative to out_dir
-       let rel = match track.strip_prefix(out_dir) {
-           Ok(r) => r.to_owned(),
-           Err(_) => match track.strip_prefix(std::path::Path::new(".")) {
-               Ok(r2) => r2.to_owned(),
-               Err(_) => track.clone(),
-           },
-       };
-       writeln!(writer, "{}", rel.display())?;
+    for track in tracks {
+        // Calculate relative path from playlist directory to the track
+        let rel = relative_path_from(playlist_dir, track);
+        writeln!(writer, "{}", rel.display())?;
     }
 
     println!("Playlist saved: {}", playlist_file.display());

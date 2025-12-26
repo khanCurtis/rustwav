@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::{
     cli::PortableConfig,
@@ -74,18 +74,34 @@ pub enum DownloadEvent {
         id: usize,
         line: String,
     },
+    /// M3U generation completed
+    M3UGenerated {
+        result: String,
+    },
+    /// M3U confirmation needed (some tracks missing)
+    M3UConfirm {
+        name: String,
+        found: usize,
+        missing: usize,
+        paths: Vec<std::path::PathBuf>,
+    },
 }
 
 pub struct DownloadWorker {
     rx: mpsc::Receiver<DownloadRequest>,
     tx: mpsc::Sender<DownloadEvent>,
+    pause_rx: watch::Receiver<bool>,
     music_path: PathBuf,
     playlist_path: PathBuf,
     db: DownloadDB,
 }
 
 impl DownloadWorker {
-    pub fn new(rx: mpsc::Receiver<DownloadRequest>, tx: mpsc::Sender<DownloadEvent>) -> Self {
+    pub fn new(
+        rx: mpsc::Receiver<DownloadRequest>,
+        tx: mpsc::Sender<DownloadEvent>,
+        pause_rx: watch::Receiver<bool>,
+    ) -> Self {
         let music_path = PathBuf::from("data/music");
         let playlist_path = PathBuf::from("data/playlists");
         let _ = std::fs::create_dir_all(&music_path);
@@ -95,6 +111,7 @@ impl DownloadWorker {
         Self {
             rx,
             tx,
+            pause_rx,
             music_path,
             playlist_path,
             db: DownloadDB::new("data/cache/downloaded_songs.json"),
@@ -252,6 +269,13 @@ impl DownloadWorker {
         };
 
         for (i, track) in album.tracks.items.iter().enumerate() {
+            // Check for pause before starting each track
+            while *self.pause_rx.borrow() {
+                if self.pause_rx.changed().await.is_err() {
+                    return;
+                }
+            }
+
             let track_title = track.name.clone();
             let track_artist = track
                 .artists
@@ -479,6 +503,13 @@ impl DownloadWorker {
         let mut downloaded_paths: Vec<PathBuf> = Vec::new();
 
         for (i, item) in all_items.iter().enumerate() {
+            // Check for pause before starting each track
+            while *self.pause_rx.borrow() {
+                if self.pause_rx.changed().await.is_err() {
+                    return;
+                }
+            }
+
             let track = match &item.track {
                 Some(rspotify::model::PlayableItem::Track(t)) => t,
                 _ => continue,

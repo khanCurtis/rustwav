@@ -12,6 +12,7 @@ pub fn handle_events(app: &mut App) -> anyhow::Result<()> {
                 match app.view {
                     View::LinkSettings => handle_settings_mode(app, key.code),
                     View::Logs => handle_logs_mode(app, key.code, key.modifiers),
+                    View::M3UConfirm => handle_m3u_confirm_mode(app, key.code),
                     _ => handle_normal_mode(app, key.code, key.modifiers),
                 }
             }
@@ -22,7 +23,13 @@ pub fn handle_events(app: &mut App) -> anyhow::Result<()> {
 
 fn handle_input_mode(app: &mut App, key: KeyCode) {
     match key {
-        KeyCode::Enter => app.submit_input(),
+        KeyCode::Enter => {
+            if app.view == View::GenerateM3U {
+                app.submit_m3u_input();
+            } else {
+                app.submit_input();
+            }
+        }
         KeyCode::Esc => app.cancel_input(),
         KeyCode::Backspace => {
             app.input.pop();
@@ -46,6 +53,14 @@ fn handle_settings_mode(app: &mut App, key: KeyCode) {
     }
 }
 
+fn handle_m3u_confirm_mode(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Enter | KeyCode::Char('y') => app.confirm_m3u(),
+        KeyCode::Esc | KeyCode::Char('n') => app.cancel_m3u(),
+        _ => {}
+    }
+}
+
 fn handle_logs_mode(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
     match key {
         KeyCode::Char('q') => app.quit(),
@@ -62,6 +77,8 @@ fn handle_logs_mode(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('p') => app.start_add_playlist(),
         KeyCode::Char('P') => app.toggle_portable(),
         KeyCode::Char('r') => app.refresh_library(),
+        KeyCode::Char('m') => app.start_generate_m3u(),
+        KeyCode::Char(' ') => app.toggle_pause(),
         _ => {}
     }
 }
@@ -75,6 +92,8 @@ fn handle_normal_mode(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('p') => app.start_add_playlist(),
         KeyCode::Char('P') => app.toggle_portable(),
         KeyCode::Char('l') => app.show_logs(),
+        KeyCode::Char('m') => app.start_generate_m3u(),
+        KeyCode::Char(' ') => app.toggle_pause(),
         KeyCode::Up | KeyCode::Char('k') => match app.view {
             View::Queue => app.queue_up(),
             View::Library => app.library_up(),

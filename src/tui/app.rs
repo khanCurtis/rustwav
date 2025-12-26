@@ -1,8 +1,9 @@
 use crate::db::{DownloadDB, TrackEntry};
+use crate::file_utils;
 use crate::spotify;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use super::worker::{DownloadEvent, DownloadRequest};
 
@@ -18,6 +19,8 @@ pub enum View {
     Queue,
     Library,
     Logs,
+    GenerateM3U,
+    M3UConfirm,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -82,6 +85,21 @@ pub struct App {
     pub download_logs: VecDeque<String>,
     pub log_scroll: usize,
     pub log_auto_scroll: bool,
+    // Pause state
+    pub paused: bool,
+    pub pause_tx: watch::Sender<bool>,
+    // M3U generation state
+    pub m3u_generating: bool,
+    pub m3u_pending: Option<M3UPending>,
+}
+
+/// Pending M3U data waiting for user confirmation
+#[derive(Debug, Clone)]
+pub struct M3UPending {
+    pub name: String,
+    pub found: usize,
+    pub missing: usize,
+    pub paths: Vec<PathBuf>,
 }
 
 impl App {
@@ -89,6 +107,7 @@ impl App {
         download_tx: mpsc::Sender<DownloadRequest>,
         event_tx: mpsc::Sender<DownloadEvent>,
         event_rx: mpsc::Receiver<DownloadEvent>,
+        pause_tx: watch::Sender<bool>,
     ) -> Self {
         let music_path = PathBuf::from("data/music");
         let playlist_path = PathBuf::from("data/playlists");
@@ -130,6 +149,12 @@ impl App {
             download_logs: VecDeque::with_capacity(500),
             log_scroll: 0,
             log_auto_scroll: true,
+            // Pause
+            paused: false,
+            pause_tx,
+            // M3U
+            m3u_generating: false,
+            m3u_pending: None,
         }
     }
 
@@ -232,6 +257,28 @@ impl App {
                 DownloadEvent::LogLine { id, line } => {
                     self.add_log(format!("[{}] {}", id, line));
                 }
+                DownloadEvent::M3UGenerated { result } => {
+                    self.m3u_generating = false;
+                    self.status_message = result;
+                }
+                DownloadEvent::M3UConfirm {
+                    name,
+                    found,
+                    missing,
+                    paths,
+                } => {
+                    self.m3u_generating = false;
+                    self.m3u_pending = Some(M3UPending {
+                        name,
+                        found,
+                        missing,
+                        paths,
+                    });
+                    self.view = View::M3UConfirm;
+                    self.status_message =
+                        "Some tracks are missing. Press Enter to generate anyway, Esc to cancel."
+                            .to_string();
+                }
             }
         }
     }
@@ -259,6 +306,8 @@ impl App {
             View::Logs => View::Main,
             View::AddLink => View::Main,
             View::LinkSettings => View::Main,
+            View::GenerateM3U => View::Main,
+            View::M3UConfirm => View::Main,
         };
     }
 
@@ -531,5 +580,229 @@ impl App {
 
     pub fn show_logs(&mut self) {
         self.view = View::Logs;
+    }
+
+    // Pause control
+    pub fn toggle_pause(&mut self) {
+        self.paused = !self.paused;
+        let _ = self.pause_tx.send(self.paused);
+        self.status_message = if self.paused {
+            "PAUSED - press Space to resume".to_string()
+        } else {
+            "Resumed".to_string()
+        };
+    }
+
+    // M3U generation
+    pub fn start_generate_m3u(&mut self) {
+        self.view = View::GenerateM3U;
+        self.input_mode = true;
+        self.input.clear();
+        self.status_message = "Enter Spotify album/playlist link to generate M3U:".to_string();
+    }
+
+    pub fn submit_m3u_input(&mut self) {
+        let link = self.input.clone();
+        self.input_mode = false;
+        self.input.clear();
+
+        if link.is_empty() {
+            self.view = View::Main;
+            self.status_message = "No link provided".to_string();
+            return;
+        }
+
+        self.m3u_generating = true;
+        self.status_message = "Fetching track list from Spotify...".to_string();
+        self.view = View::Main;
+
+        // Clone needed data for async task
+        let db_tracks: Vec<TrackEntry> = self.db.tracks.iter().cloned().collect();
+        let playlist_path = self.playlist_path.clone();
+        let event_tx = self.event_tx.clone();
+
+        tokio::spawn(async move {
+            match check_m3u_tracks(&link, &db_tracks).await {
+                M3UCheckResult::Error(msg) => {
+                    let _ = event_tx.send(DownloadEvent::M3UGenerated { result: msg }).await;
+                }
+                M3UCheckResult::AllFound { name, paths } => {
+                    // All tracks found, generate directly
+                    let result = do_generate_m3u(&name, &paths, &playlist_path);
+                    let _ = event_tx.send(DownloadEvent::M3UGenerated { result }).await;
+                }
+                M3UCheckResult::SomeMissing {
+                    name,
+                    found,
+                    missing,
+                    paths,
+                } => {
+                    // Ask for confirmation
+                    let _ = event_tx
+                        .send(DownloadEvent::M3UConfirm {
+                            name,
+                            found,
+                            missing,
+                            paths,
+                        })
+                        .await;
+                }
+                M3UCheckResult::NoneFound { total } => {
+                    let _ = event_tx
+                        .send(DownloadEvent::M3UGenerated {
+                            result: format!("No tracks found in library (0/{} total)", total),
+                        })
+                        .await;
+                }
+            }
+        });
+    }
+
+    pub fn confirm_m3u(&mut self) {
+        if let Some(pending) = self.m3u_pending.take() {
+            let result = do_generate_m3u(&pending.name, &pending.paths, &self.playlist_path);
+            self.status_message = result;
+        }
+        self.view = View::Main;
+    }
+
+    pub fn cancel_m3u(&mut self) {
+        self.m3u_pending = None;
+        self.view = View::Main;
+        self.status_message = "M3U generation cancelled".to_string();
+    }
+}
+
+/// Result of checking M3U tracks against the database
+enum M3UCheckResult {
+    Error(String),
+    AllFound {
+        name: String,
+        paths: Vec<PathBuf>,
+    },
+    SomeMissing {
+        name: String,
+        found: usize,
+        missing: usize,
+        paths: Vec<PathBuf>,
+    },
+    NoneFound {
+        total: usize,
+    },
+}
+
+/// Check which tracks from a Spotify link are in the database
+async fn check_m3u_tracks(link: &str, db_tracks: &[TrackEntry]) -> M3UCheckResult {
+    let is_album = link.contains("/album/");
+    let is_playlist = link.contains("/playlist/");
+
+    if !is_album && !is_playlist {
+        return M3UCheckResult::Error(
+            "Error: Invalid Spotify link (must be album or playlist)".to_string(),
+        );
+    }
+
+    // Fetch tracks from Spotify and get the name
+    let (spotify_tracks, m3u_name): (Vec<(String, String)>, String) = if is_album {
+        match spotify::fetch_album(link).await {
+            Ok(album) => {
+                let album_name = album.name.clone();
+                let main_artist = album
+                    .artists
+                    .first()
+                    .map(|a| a.name.clone())
+                    .unwrap_or_else(|| "Unknown".to_string());
+                let tracks: Vec<(String, String)> = album
+                    .tracks
+                    .items
+                    .iter()
+                    .map(|t| {
+                        let artist = t
+                            .artists
+                            .first()
+                            .map(|a| a.name.clone())
+                            .unwrap_or_else(|| main_artist.clone());
+                        (artist, t.name.clone())
+                    })
+                    .collect();
+                (tracks, format!("{} - {}", main_artist, album_name))
+            }
+            Err(e) => return M3UCheckResult::Error(format!("Spotify error: {}", e)),
+        }
+    } else {
+        match spotify::fetch_playlist(link).await {
+            Ok(playlist) => {
+                let playlist_name = playlist.name.clone();
+                match spotify::fetch_all_playlist_items(link).await {
+                    Ok(items) => {
+                        let tracks: Vec<(String, String)> = items
+                            .iter()
+                            .filter_map(|item| {
+                                if let Some(rspotify::model::PlayableItem::Track(t)) = &item.track {
+                                    let artist = t
+                                        .artists
+                                        .first()
+                                        .map(|a| a.name.clone())
+                                        .unwrap_or_else(|| "Unknown".to_string());
+                                    Some((artist, t.name.clone()))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        (tracks, playlist_name)
+                    }
+                    Err(e) => return M3UCheckResult::Error(format!("Spotify error: {}", e)),
+                }
+            }
+            Err(e) => return M3UCheckResult::Error(format!("Spotify error: {}", e)),
+        }
+    };
+
+    // Match against database
+    let mut found_paths: Vec<PathBuf> = Vec::new();
+    let mut missing = 0;
+
+    for (artist, title) in &spotify_tracks {
+        let found = db_tracks.iter().find(|e| {
+            e.artist.to_lowercase() == artist.to_lowercase()
+                && e.title.to_lowercase() == title.to_lowercase()
+        });
+
+        if let Some(entry) = found {
+            found_paths.push(PathBuf::from(&entry.path));
+        } else {
+            missing += 1;
+        }
+    }
+
+    if found_paths.is_empty() {
+        M3UCheckResult::NoneFound {
+            total: spotify_tracks.len(),
+        }
+    } else if missing == 0 {
+        M3UCheckResult::AllFound {
+            name: m3u_name,
+            paths: found_paths,
+        }
+    } else {
+        M3UCheckResult::SomeMissing {
+            name: m3u_name,
+            found: found_paths.len(),
+            missing,
+            paths: found_paths,
+        }
+    }
+}
+
+/// Actually generate the M3U file
+fn do_generate_m3u(name: &str, paths: &[PathBuf], playlist_path: &std::path::Path) -> String {
+    match file_utils::create_m3u(name, paths, playlist_path) {
+        Ok(_) => format!(
+            "Created: {}.m3u ({} tracks)",
+            file_utils::sanitize_filename(name),
+            paths.len()
+        ),
+        Err(e) => format!("Failed: {}", e),
     }
 }

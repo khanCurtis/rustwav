@@ -37,14 +37,15 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     ];
 
     let selected = match app.view {
-        View::Main | View::AddLink | View::LinkSettings => 0,
+        View::Main | View::AddLink | View::LinkSettings | View::GenerateM3U | View::M3UConfirm => 0,
         View::Queue => 1,
         View::Library => 2,
         View::Logs => 3,
     };
 
     let portable_indicator = if app.portable_mode { " [P]" } else { "" };
-    let title = format!(" rustwav{} ", portable_indicator);
+    let pause_indicator = if app.paused { " [PAUSED]" } else { "" };
+    let title = format!(" rustwav{}{} ", portable_indicator, pause_indicator);
 
     let tabs = Tabs::new(titles)
         .block(Block::default().borders(Borders::ALL).title(title))
@@ -67,6 +68,8 @@ fn draw_main(frame: &mut Frame, app: &App, area: Rect) {
         View::Queue => draw_queue_view(frame, app, area),
         View::Library => draw_library_view(frame, app, area),
         View::Logs => draw_logs_view(frame, app, area),
+        View::GenerateM3U => draw_generate_m3u_view(frame, app, area),
+        View::M3UConfirm => draw_m3u_confirm_view(frame, app, area),
     }
 }
 
@@ -104,6 +107,14 @@ fn draw_main_view(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("    l", Style::default().fg(Color::Yellow)),
             Span::raw("  View download logs"),
+        ]),
+        Line::from(vec![
+            Span::styled("    m", Style::default().fg(Color::Yellow)),
+            Span::raw("  Generate M3U from Spotify link"),
+        ]),
+        Line::from(vec![
+            Span::styled("Space", Style::default().fg(Color::Yellow)),
+            Span::raw("  Pause/resume downloads"),
         ]),
         Line::from(vec![
             Span::styled("  Tab", Style::default().fg(Color::Yellow)),
@@ -483,6 +494,97 @@ fn draw_logs_view(frame: &mut Frame, app: &App, area: Rect) {
             height: 1,
         };
         frame.render_widget(scroll_indicator, indicator_area);
+    }
+}
+
+fn draw_generate_m3u_view(frame: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .margin(2)
+        .split(area);
+
+    let input = Paragraph::new(app.input.as_str())
+        .style(Style::default().fg(Color::Yellow))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Spotify Link (Album or Playlist) "),
+        );
+
+    frame.render_widget(input, chunks[0]);
+
+    let help_text = if app.m3u_generating {
+        "Fetching tracks from Spotify..."
+    } else {
+        "Enter a Spotify album/playlist link. Press Enter to generate M3U, Esc to cancel."
+    };
+
+    let help = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
+
+    frame.render_widget(help, chunks[1]);
+
+    // Show cursor
+    if app.input_mode {
+        frame.set_cursor_position((chunks[0].x + app.input.len() as u16 + 1, chunks[0].y + 1));
+    }
+}
+
+fn draw_m3u_confirm_view(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Generate M3U - Confirmation ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if let Some(ref pending) = app.m3u_pending {
+        let text = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("  Playlist: {}", pending.name),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("  Tracks found: "),
+                Span::styled(
+                    format!("{}", pending.found),
+                    Style::default().fg(Color::Green),
+                ),
+            ]),
+            Line::from(vec![
+                Span::raw("  Tracks missing: "),
+                Span::styled(
+                    format!("{}", pending.missing),
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Some tracks are not downloaded yet.",
+                Style::default().fg(Color::Yellow),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("  Press "),
+                Span::styled("Enter", Style::default().fg(Color::Green)),
+                Span::raw(" or "),
+                Span::styled("y", Style::default().fg(Color::Green)),
+                Span::raw(" to generate anyway"),
+            ]),
+            Line::from(vec![
+                Span::raw("  Press "),
+                Span::styled("Esc", Style::default().fg(Color::Red)),
+                Span::raw(" or "),
+                Span::styled("n", Style::default().fg(Color::Red)),
+                Span::raw(" to cancel"),
+            ]),
+        ];
+
+        let paragraph = Paragraph::new(text);
+        frame.render_widget(paragraph, inner);
     }
 }
 

@@ -24,7 +24,7 @@ use ratatui::prelude::*;
 use rspotify::model::PlayableItem;
 use std::io::stdout;
 use std::path::PathBuf;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -50,15 +50,16 @@ async fn run_tui() -> anyhow::Result<()> {
     // Create channels for download communication
     let (download_tx, download_rx) = mpsc::channel(32);
     let (event_tx, event_rx) = mpsc::channel(32);
+    let (pause_tx, pause_rx) = watch::channel(false);
 
     // Spawn the download worker
-    let worker = DownloadWorker::new(download_rx, event_tx.clone());
+    let worker = DownloadWorker::new(download_rx, event_tx.clone(), pause_rx);
     tokio::spawn(async move {
         worker.run().await;
     });
 
     // Create app state with channels
-    let mut app = App::new(download_tx, event_tx, event_rx);
+    let mut app = App::new(download_tx, event_tx, event_rx, pause_tx);
 
     // Main loop
     while app.running {
