@@ -28,6 +28,11 @@ pub enum DownloadRequest {
 
 #[derive(Debug, Clone)]
 pub enum DownloadEvent {
+    /// Update name while still fetching (before we know track count)
+    MetadataFetched {
+        id: usize,
+        name: String,
+    },
     Started {
         id: usize,
         name: String,
@@ -127,6 +132,17 @@ impl DownloadWorker {
         let _ = self.tx.send(DownloadEvent::LogLine { id, line }).await;
     }
 
+    /// Format error message with hint if it looks like a 404/not found error
+    fn format_error_with_hint(error: &anyhow::Error, item_type: &str) -> String {
+        let error_str = error.to_string().to_lowercase();
+        if error_str.contains("404") || error_str.contains("not found") {
+            format!("{} (Hint: Is the {} private? Only public {}s can be downloaded)",
+                error, item_type, item_type)
+        } else {
+            error.to_string()
+        }
+    }
+
     async fn process_album(
         &mut self,
         id: usize,
@@ -160,11 +176,12 @@ impl DownloadWorker {
         let album = match spotify::fetch_album(link).await {
             Ok(a) => a,
             Err(e) => {
+                let error_msg = Self::format_error_with_hint(&e, "album");
                 let _ = self
                     .tx
                     .send(DownloadEvent::Error {
                         id,
-                        error: format!("Failed to fetch album ({}): {}", link, e),
+                        error: format!("Failed to fetch album ({}): {}", link, error_msg),
                     })
                     .await;
                 return;
@@ -178,6 +195,16 @@ impl DownloadWorker {
             .unwrap_or_else(|| "Unknown Artist".to_string());
         let album_name = album.name.clone();
         let total_tracks = album.tracks.items.len();
+        let display_name = format!("{} - {}", main_artist, album_name);
+
+        // Update queue with album name while still processing
+        let _ = self
+            .tx
+            .send(DownloadEvent::MetadataFetched {
+                id,
+                name: display_name.clone(),
+            })
+            .await;
 
         self.send_log(
             id,
@@ -192,7 +219,7 @@ impl DownloadWorker {
             .tx
             .send(DownloadEvent::Started {
                 id,
-                name: format!("{} - {}", main_artist, album_name),
+                name: display_name,
                 total_tracks,
             })
             .await;
@@ -388,11 +415,12 @@ impl DownloadWorker {
         let playlist = match spotify::fetch_playlist(link).await {
             Ok(p) => p,
             Err(e) => {
+                let error_msg = Self::format_error_with_hint(&e, "playlist");
                 let _ = self
                     .tx
                     .send(DownloadEvent::Error {
                         id,
-                        error: format!("Failed to fetch playlist ({}): {}", link, e),
+                        error: format!("Failed to fetch playlist ({}): {}", link, error_msg),
                     })
                     .await;
                 return;
@@ -401,8 +429,17 @@ impl DownloadWorker {
 
         let playlist_name = playlist.name.clone();
 
+        // Update queue with playlist name while still fetching tracks
+        let _ = self
+            .tx
+            .send(DownloadEvent::MetadataFetched {
+                id,
+                name: playlist_name.clone(),
+            })
+            .await;
+
         // Fetch ALL playlist items with pagination (no 100 track limit)
-        self.send_log(id, "Fetching all playlist tracks...".to_string())
+        self.send_log(id, format!("Fetching tracks for '{}'...", playlist_name))
             .await;
 
         let all_items = match spotify::fetch_all_playlist_items(link).await {

@@ -1,4 +1,5 @@
 use crate::db::{DownloadDB, TrackEntry};
+use crate::spotify;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
@@ -69,6 +70,7 @@ pub struct App {
     pub playlist_path: PathBuf,
     // Channels
     pub download_tx: mpsc::Sender<DownloadRequest>,
+    pub event_tx: mpsc::Sender<DownloadEvent>,
     pub event_rx: mpsc::Receiver<DownloadEvent>,
     next_id: usize,
     // Settings state
@@ -85,6 +87,7 @@ pub struct App {
 impl App {
     pub fn new(
         download_tx: mpsc::Sender<DownloadRequest>,
+        event_tx: mpsc::Sender<DownloadEvent>,
         event_rx: mpsc::Receiver<DownloadEvent>,
     ) -> Self {
         let music_path = PathBuf::from("data/music");
@@ -115,6 +118,7 @@ impl App {
             music_path,
             playlist_path,
             download_tx,
+            event_tx,
             event_rx,
             next_id: 0,
             // Settings defaults
@@ -132,6 +136,12 @@ impl App {
     pub fn process_events(&mut self) {
         while let Ok(event) = self.event_rx.try_recv() {
             match event {
+                DownloadEvent::MetadataFetched { id, name } => {
+                    // Update name while still in Fetching state
+                    if let Some(item) = self.queue.iter_mut().find(|q| q.id == id) {
+                        item.name = format!("Fetching: {}", name);
+                    }
+                }
                 DownloadEvent::Started {
                     id,
                     name,
@@ -342,6 +352,10 @@ impl App {
         };
         let quality = QUALITY_OPTIONS[self.selected_quality].to_string();
 
+        let link_clone = link.clone();
+        let event_tx = self.event_tx.clone();
+        let link_type = self.link_type.clone();
+
         let request = match self.link_type {
             LinkType::Album => {
                 self.queue.push(QueueItem {
@@ -376,6 +390,36 @@ impl App {
                 }
             }
         };
+
+        // Spawn immediate metadata fetch (doesn't wait for download worker)
+        tokio::spawn(async move {
+            let name = match link_type {
+                LinkType::Album => {
+                    if let Ok(album) = spotify::fetch_album(&link_clone).await {
+                        let artist = album
+                            .artists
+                            .first()
+                            .map(|a| a.name.clone())
+                            .unwrap_or_else(|| "Unknown Artist".to_string());
+                        Some(format!("{} - {}", artist, album.name))
+                    } else {
+                        None
+                    }
+                }
+                LinkType::Playlist => {
+                    if let Ok(playlist) = spotify::fetch_playlist(&link_clone).await {
+                        Some(playlist.name)
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some(name) = name {
+                let _ = event_tx
+                    .send(DownloadEvent::MetadataFetched { id, name })
+                    .await;
+            }
+        });
 
         // Send to worker (non-blocking)
         let tx = self.download_tx.clone();

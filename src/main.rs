@@ -52,13 +52,13 @@ async fn run_tui() -> anyhow::Result<()> {
     let (event_tx, event_rx) = mpsc::channel(32);
 
     // Spawn the download worker
-    let worker = DownloadWorker::new(download_rx, event_tx);
+    let worker = DownloadWorker::new(download_rx, event_tx.clone());
     tokio::spawn(async move {
         worker.run().await;
     });
 
     // Create app state with channels
-    let mut app = App::new(download_tx, event_rx);
+    let mut app = App::new(download_tx, event_tx, event_rx);
 
     // Main loop
     while app.running {
