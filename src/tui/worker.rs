@@ -164,7 +164,7 @@ impl DownloadWorker {
                     .tx
                     .send(DownloadEvent::Error {
                         id,
-                        error: format!("Failed to fetch album: {}", e),
+                        error: format!("Failed to fetch album ({}): {}", link, e),
                     })
                     .await;
                 return;
@@ -392,7 +392,7 @@ impl DownloadWorker {
                     .tx
                     .send(DownloadEvent::Error {
                         id,
-                        error: format!("Failed to fetch playlist: {}", e),
+                        error: format!("Failed to fetch playlist ({}): {}", link, e),
                     })
                     .await;
                 return;
@@ -412,7 +412,7 @@ impl DownloadWorker {
                     .tx
                     .send(DownloadEvent::Error {
                         id,
-                        error: format!("Failed to fetch playlist tracks: {}", e),
+                        error: format!("Failed to fetch playlist tracks for '{}': {}", playlist_name, e),
                     })
                     .await;
                 return;
