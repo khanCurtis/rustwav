@@ -16,6 +16,19 @@ pub fn tag_mp3(
     cover_path: Option<&Path>,
     config: &PortableConfig,
 ) -> anyhow::Result<()> {
+    tag_audio(file_path, artist, album, title, track, cover_path, config)
+}
+
+/// Tag any audio file (MP3, WAV, FLAC, AAC) with ID3v2.3 metadata.
+pub fn tag_audio(
+    file_path: &Path,
+    artist: &str,
+    album: &str,
+    title: &str,
+    track: u32,
+    cover_path: Option<&Path>,
+    config: &PortableConfig,
+) -> anyhow::Result<()> {
     let mut tag = Tag::new();
     tag.set_artist(artist);
     tag.set_album(album);
@@ -36,7 +49,18 @@ pub fn tag_mp3(
         }
     }
 
-    tag.write_to_path(file_path, Version::Id3v23).context("writing ID3 tag")?;
+    // Use format-specific write method based on file extension
+    let ext = file_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    match ext.as_str() {
+        "wav" => tag.write_to_wav_path(file_path, Version::Id3v23).context("writing ID3 tag to WAV")?,
+        "aiff" | "aif" => tag.write_to_aiff_path(file_path, Version::Id3v23).context("writing ID3 tag to AIFF")?,
+        _ => tag.write_to_path(file_path, Version::Id3v23).context("writing ID3 tag")?,
+    }
 
     Ok(())
 }

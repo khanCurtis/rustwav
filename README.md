@@ -14,6 +14,7 @@ Command-line interface for rustwav. This branch contains the terminal-based down
 - **Download cache** - Skip already-downloaded tracks
 - **M3U playlists** - Auto-generated playlist files
 - **Portable mode** - Optimized for constrained devices (3DS, car stereos, FAT32)
+- **Audio converter** - Convert between MP3, FLAC, WAV, AAC formats with metadata refresh
 
 ## Installation
 
@@ -28,7 +29,10 @@ cargo build --release
 
 - Rust 1.70+
 - `yt-dlp` in PATH
+- `ffmpeg` in PATH (required for audio extraction and format conversion)
 - Spotify API credentials:
+
+> **Note:** FFmpeg is required for both downloading (audio extraction) and the audio converter feature. Make sure it's installed and accessible in your PATH.
   ```bash
   export RSPOTIFY_CLIENT_ID="your_client_id"
   export RSPOTIFY_CLIENT_SECRET="your_client_secret"
@@ -45,7 +49,21 @@ rustwav playlist <spotify-playlist-link>
 
 # Specify format (default: mp3)
 rustwav album --format flac <link>
+
+# Convert audio files between formats
+rustwav convert -i "path/to/file.wav" -t mp3 --quality high
+rustwav convert -i "path/to/directory" -t flac -r  # recursive
 ```
+
+### Convert Options
+
+| Option | Description |
+|--------|-------------|
+| `-i, --input` | Input file or directory |
+| `-t, --to` | Target format: mp3, flac, wav, aac (default: mp3) |
+| `-q, --quality` | Quality: high, medium, low (default: high) |
+| `--refresh-metadata` | Refresh ID3 tags from Spotify (default: true) |
+| `-r, --recursive` | Process directories recursively |
 
 ### Portable Mode
 

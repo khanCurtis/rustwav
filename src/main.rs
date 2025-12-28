@@ -2,6 +2,7 @@ mod sources {
     pub mod spotify;
     pub mod models;
 }
+mod converter;
 mod downloader;
 mod metadata;
 mod file_utils;
@@ -205,7 +206,183 @@ async fn main() -> anyhow::Result<()> {
             file_utils::create_m3u(&playlist_name, &downloaded_paths, &playlist_path)?;
             println!("Playlist '{}' with {} tracks finished.", playlist_name, downloaded_paths.len());
         }
+
+        crate::cli::Commands::Convert {
+            input,
+            to,
+            quality,
+            refresh_metadata,
+            recursive,
+        } => {
+            // Check FFmpeg availability
+            if !converter::check_ffmpeg_available() {
+                anyhow::bail!("FFmpeg is not installed or not in PATH. Please install FFmpeg to use the converter.");
+            }
+
+            // Validate target format
+            if !converter::is_supported_format(to) {
+                anyhow::bail!(
+                    "Unsupported format: {}. Supported formats: {:?}",
+                    to,
+                    converter::SUPPORTED_FORMATS
+                );
+            }
+
+            // Collect files to convert
+            let input_path = std::path::Path::new(input);
+            let files: Vec<PathBuf> = if input_path.is_file() {
+                vec![input_path.to_path_buf()]
+            } else if input_path.is_dir() {
+                collect_audio_files(input_path, *recursive)?
+            } else {
+                anyhow::bail!("Input path does not exist: {}", input);
+            };
+
+            if files.is_empty() {
+                println!("No audio files found to convert.");
+                return Ok(());
+            }
+
+            println!("Found {} file(s) to convert to {}", files.len(), to);
+
+            let mut converted_count = 0;
+            let mut failed_count = 0;
+
+            for file_path in &files {
+                let current_format = converter::get_format_from_path(file_path);
+                if current_format.as_deref() == Some(to.as_str()) {
+                    println!("Skipping {} (already in {} format)", file_path.display(), to);
+                    continue;
+                }
+
+                println!("\nConverting: {}", file_path.display());
+
+                // Convert the file
+                let result = converter::convert_audio(file_path, to, quality, |msg| {
+                    println!("  {}", msg);
+                });
+
+                match result {
+                    Ok(new_path) => {
+                        converted_count += 1;
+
+                        // Refresh metadata from Spotify if requested
+                        if *refresh_metadata {
+                            if let Some(entry) = db.find_by_path(&file_path.display().to_string()) {
+                                let artist = entry.artist.clone();
+                                let title = entry.title.clone();
+
+                                println!("  Refreshing metadata for: {} - {}", artist, title);
+
+                                match tokio::runtime::Handle::current()
+                                    .block_on(spotify::search_track(&artist, &title))
+                                {
+                                    Ok(Some(meta)) => {
+                                        // Download cover art if available
+                                        let cover_path = if let Some(url) = &meta.cover_url {
+                                            let cover_file = new_path.with_file_name("temp_cover.jpg");
+                                            if let Ok(response) = reqwest::blocking::get(url) {
+                                                if let Ok(bytes) = response.bytes() {
+                                                    let _ = std::fs::write(&cover_file, &bytes);
+                                                    Some(cover_file)
+                                                } else {
+                                                    None
+                                                }
+                                            } else {
+                                                None
+                                            }
+                                        } else {
+                                            None
+                                        };
+
+                                        // Apply metadata
+                                        if let Err(e) = metadata::tag_audio(
+                                            &new_path,
+                                            &meta.artist,
+                                            &meta.album,
+                                            &meta.title,
+                                            meta.track_number,
+                                            cover_path.as_deref(),
+                                            &config,
+                                        ) {
+                                            println!("  Warning: Failed to apply metadata: {}", e);
+                                        } else {
+                                            println!("  Metadata refreshed successfully");
+                                        }
+
+                                        // Clean up temp cover
+                                        if let Some(cover) = cover_path {
+                                            let _ = std::fs::remove_file(cover);
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        println!("  Could not find track on Spotify, keeping existing metadata");
+                                    }
+                                    Err(e) => {
+                                        println!("  Spotify search failed: {}", e);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Update database with new path
+                        let old_path_str = file_path.display().to_string();
+                        let new_path_str = new_path.display().to_string();
+                        db.update_path(&old_path_str, &new_path_str);
+
+                        // Prompt for deletion
+                        print!("  Delete original file? [y/N]: ");
+                        use std::io::Write;
+                        std::io::stdout().flush()?;
+
+                        let mut response = String::new();
+                        std::io::stdin().read_line(&mut response)?;
+
+                        if response.trim().eq_ignore_ascii_case("y") {
+                            match converter::delete_file(file_path) {
+                                Ok(()) => println!("  Original deleted."),
+                                Err(e) => println!("  Failed to delete original: {}", e),
+                            }
+                        } else {
+                            println!("  Original kept.");
+                        }
+                    }
+                    Err(e) => {
+                        failed_count += 1;
+                        println!("  Error: {}", e);
+                    }
+                }
+            }
+
+            println!(
+                "\nConversion complete: {} succeeded, {} failed",
+                converted_count, failed_count
+            );
+        }
     }
 
     Ok(())
+}
+
+/// Collect audio files from a directory, optionally recursively
+fn collect_audio_files(dir: &std::path::Path, recursive: bool) -> anyhow::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let extensions = ["mp3", "flac", "wav", "aac", "m4a"];
+
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_file() {
+            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                if extensions.contains(&ext.to_lowercase().as_str()) {
+                    files.push(path);
+                }
+            }
+        } else if path.is_dir() && recursive {
+            files.extend(collect_audio_files(&path, recursive)?);
+        }
+    }
+
+    Ok(files)
 } 
