@@ -13,6 +13,8 @@ pub fn handle_events(app: &mut App) -> anyhow::Result<()> {
                     View::LinkSettings => handle_settings_mode(app, key.code),
                     View::Logs => handle_logs_mode(app, key.code, key.modifiers),
                     View::M3UConfirm => handle_m3u_confirm_mode(app, key.code),
+                    View::ConvertSettings => handle_convert_settings_mode(app, key.code),
+                    View::ConvertConfirm => handle_convert_confirm_mode(app, key.code),
                     _ => handle_normal_mode(app, key.code, key.modifiers),
                 }
             }
@@ -87,6 +89,8 @@ fn handle_normal_mode(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
     match key {
         KeyCode::Char('q') => app.quit(),
         KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => app.quit(),
+        // 'c' in Library view starts conversion
+        KeyCode::Char('c') if app.view == View::Library => app.start_convert(),
         KeyCode::Tab => app.next_view(),
         KeyCode::Char('a') => app.start_add_album(),
         KeyCode::Char('p') => app.start_add_playlist(),
@@ -105,6 +109,27 @@ fn handle_normal_mode(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
             _ => {}
         },
         KeyCode::Char('r') => app.refresh_library(),
+        _ => {}
+    }
+}
+
+fn handle_convert_settings_mode(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Enter => app.submit_convert(),
+        KeyCode::Esc => app.cancel_convert(),
+        KeyCode::Left => app.convert_settings_left(),
+        KeyCode::Right => app.convert_settings_right(),
+        KeyCode::Char('h') => app.convert_quality_left(),
+        KeyCode::Char('l') => app.convert_quality_right(),
+        KeyCode::Char(' ') => app.convert_toggle_refresh(),
+        _ => {}
+    }
+}
+
+fn handle_convert_confirm_mode(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Char('y') => app.confirm_delete_original(),
+        KeyCode::Char('n') | KeyCode::Esc => app.cancel_delete_original(),
         _ => {}
     }
 }

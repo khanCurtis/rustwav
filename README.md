@@ -10,6 +10,7 @@ Rust-based music downloader and library manager with a terminal UI. Downloads an
 - **Library browser** - Browse by artist, album, playlist
 - **Real-time progress** - Watch downloads as they happen
 - **Portable mode** - Optimized output for constrained devices
+- **Audio converter** - Convert between MP3, FLAC, WAV, AAC formats with metadata refresh
 
 ## Installation
 
@@ -23,8 +24,10 @@ cargo build --release
 
 - Rust 1.70+
 - `yt-dlp` in PATH
-- `ffmpeg` in PATH (for audio extraction)
+- `ffmpeg` in PATH (required for audio extraction and format conversion)
 - Spotify API credentials (see setup below)
+
+> **Note:** FFmpeg is required for both downloading (audio extraction) and the audio converter feature. Make sure it's installed and accessible in your PATH.
 
 ## Setup
 
@@ -81,7 +84,21 @@ rustwav
 # Or use CLI mode directly
 rustwav album <spotify-album-link>
 rustwav playlist <spotify-playlist-link>
+
+# Convert audio files between formats
+rustwav convert -i "path/to/file.wav" -t mp3 --quality high
+rustwav convert -i "path/to/directory" -t flac -r  # recursive
 ```
+
+### Convert Options
+
+| Option | Description |
+|--------|-------------|
+| `-i, --input` | Input file or directory |
+| `-t, --to` | Target format: mp3, flac, wav, aac (default: mp3) |
+| `-q, --quality` | Quality: high, medium, low (default: high) |
+| `--refresh-metadata` | Refresh ID3 tags from Spotify (default: true) |
+| `-r, --recursive` | Process directories recursively |
 
 ## Keyboard Shortcuts
 
@@ -92,6 +109,7 @@ rustwav playlist <spotify-playlist-link>
 | `Enter` | Select / Confirm |
 | `a` | Add album |
 | `p` | Add playlist |
+| `c` | Convert selected track (in Library view) |
 | `↑/↓` | Navigate |
 
 ## Architecture

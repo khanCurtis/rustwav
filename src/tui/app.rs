@@ -21,6 +21,8 @@ pub enum View {
     Logs,
     GenerateM3U,
     M3UConfirm,
+    ConvertSettings,
+    ConvertConfirm,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -91,6 +93,12 @@ pub struct App {
     // M3U generation state
     pub m3u_generating: bool,
     pub m3u_pending: Option<M3UPending>,
+    // Conversion state
+    pub convert_pending: Option<ConvertPending>,
+    pub convert_target_format: usize,
+    pub convert_quality: usize,
+    pub convert_refresh_metadata: bool,
+    pub convert_delete_pending: Option<ConvertDeletePending>,
 }
 
 /// Pending M3U data waiting for user confirmation
@@ -100,6 +108,21 @@ pub struct M3UPending {
     pub found: usize,
     pub missing: usize,
     pub paths: Vec<PathBuf>,
+}
+
+/// Pending conversion data
+#[derive(Debug, Clone)]
+pub struct ConvertPending {
+    pub track_path: String,
+    pub artist: String,
+    pub title: String,
+}
+
+/// Pending deletion confirmation after conversion
+#[derive(Debug, Clone)]
+pub struct ConvertDeletePending {
+    pub old_path: String,
+    pub new_path: String,
 }
 
 impl App {
@@ -155,6 +178,12 @@ impl App {
             // M3U
             m3u_generating: false,
             m3u_pending: None,
+            // Conversion
+            convert_pending: None,
+            convert_target_format: 0,
+            convert_quality: 0,
+            convert_refresh_metadata: true,
+            convert_delete_pending: None,
         }
     }
 
@@ -279,6 +308,40 @@ impl App {
                         "Some tracks are missing. Press Enter to generate anyway, Esc to cancel."
                             .to_string();
                 }
+                DownloadEvent::ConvertStarted {
+                    id,
+                    path,
+                    target_format,
+                } => {
+                    self.add_log(format!(
+                        "[{}] Converting: {} -> {}",
+                        id, path, target_format
+                    ));
+                    self.status_message = format!("Converting to {}...", target_format);
+                }
+                DownloadEvent::ConvertComplete {
+                    id,
+                    old_path,
+                    new_path,
+                } => {
+                    self.add_log(format!("[{}] Converted: {} -> {}", id, old_path, new_path));
+                    self.status_message = format!("Conversion complete: {}", new_path);
+                    // Refresh library to show updated path
+                    self.refresh_library();
+                }
+                DownloadEvent::ConvertFailed { id, path, error } => {
+                    self.add_log(format!("[{}] Conversion failed: {} - {}", id, path, error));
+                    self.status_message = format!("Conversion failed: {}", error);
+                }
+                DownloadEvent::ConvertDeleteConfirm { old_path, new_path, .. } => {
+                    self.convert_delete_pending = Some(ConvertDeletePending {
+                        old_path,
+                        new_path,
+                    });
+                    self.view = View::ConvertConfirm;
+                    self.status_message =
+                        "Delete original file? Press 'y' to delete, 'n' to keep.".to_string();
+                }
             }
         }
     }
@@ -308,6 +371,8 @@ impl App {
             View::LinkSettings => View::Main,
             View::GenerateM3U => View::Main,
             View::M3UConfirm => View::Main,
+            View::ConvertSettings => View::Main,
+            View::ConvertConfirm => View::Main,
         };
     }
 
@@ -670,6 +735,123 @@ impl App {
         self.m3u_pending = None;
         self.view = View::Main;
         self.status_message = "M3U generation cancelled".to_string();
+    }
+
+    // Conversion methods
+    pub fn start_convert(&mut self) {
+        if self.library.is_empty() {
+            self.status_message = "Library is empty, nothing to convert".to_string();
+            return;
+        }
+
+        let selected = &self.library[self.library_selected];
+        self.convert_pending = Some(ConvertPending {
+            track_path: selected.path.clone(),
+            artist: selected.artist.clone(),
+            title: selected.title.clone(),
+        });
+        self.view = View::ConvertSettings;
+        self.status_message = format!(
+            "Convert: {} - {}. Select format and press Enter.",
+            selected.artist, selected.title
+        );
+    }
+
+    pub fn cancel_convert(&mut self) {
+        self.convert_pending = None;
+        self.view = View::Library;
+        self.status_message = "Conversion cancelled".to_string();
+    }
+
+    pub fn submit_convert(&mut self) {
+        let pending = match self.convert_pending.take() {
+            Some(p) => p,
+            None => {
+                self.view = View::Library;
+                self.status_message = "No conversion pending".to_string();
+                return;
+            }
+        };
+
+        self.view = View::Logs;
+        self.next_id += 1;
+        let id = self.next_id;
+
+        let format = FORMAT_OPTIONS[self.convert_target_format].to_string();
+        let quality = QUALITY_OPTIONS[self.convert_quality].to_string();
+        let refresh_metadata = self.convert_refresh_metadata;
+
+        let request = DownloadRequest::Convert {
+            id,
+            input_path: pending.track_path,
+            target_format: format.clone(),
+            quality: quality.clone(),
+            refresh_metadata,
+            artist: pending.artist,
+            title: pending.title,
+        };
+
+        let tx = self.download_tx.clone();
+        tokio::spawn(async move {
+            let _ = tx.send(request).await;
+        });
+
+        self.status_message = format!("Converting to {} (quality: {})...", format, quality);
+    }
+
+    pub fn convert_settings_up(&mut self) {
+        // Cycle through: Format -> Quality -> Refresh Metadata
+        // Currently on refresh metadata, go to quality
+        // Just use a simple toggle for now
+    }
+
+    pub fn convert_settings_down(&mut self) {
+        // Cycle through settings fields
+    }
+
+    pub fn convert_settings_left(&mut self) {
+        if self.convert_target_format > 0 {
+            self.convert_target_format -= 1;
+        }
+    }
+
+    pub fn convert_settings_right(&mut self) {
+        if self.convert_target_format < FORMAT_OPTIONS.len() - 1 {
+            self.convert_target_format += 1;
+        }
+    }
+
+    pub fn convert_toggle_refresh(&mut self) {
+        self.convert_refresh_metadata = !self.convert_refresh_metadata;
+    }
+
+    pub fn convert_quality_left(&mut self) {
+        if self.convert_quality > 0 {
+            self.convert_quality -= 1;
+        }
+    }
+
+    pub fn convert_quality_right(&mut self) {
+        if self.convert_quality < QUALITY_OPTIONS.len() - 1 {
+            self.convert_quality += 1;
+        }
+    }
+
+    pub fn confirm_delete_original(&mut self) {
+        if let Some(pending) = self.convert_delete_pending.take() {
+            if let Err(e) = std::fs::remove_file(&pending.old_path) {
+                self.status_message = format!("Failed to delete original: {}", e);
+            } else {
+                self.status_message = "Original file deleted".to_string();
+            }
+        }
+        self.view = View::Library;
+    }
+
+    pub fn cancel_delete_original(&mut self) {
+        self.convert_delete_pending = None;
+        self.view = View::Library;
+        self.status_message = "Original file kept".to_string();
     }
 }
 

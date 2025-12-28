@@ -39,6 +39,47 @@ impl DownloadDB {
         self.tracks.contains(entry)
     }
 
+    /// Find a track entry by its file path
+    pub fn find_by_path(&self, path: &str) -> Option<&TrackEntry> {
+        self.tracks.iter().find(|t| t.path == path)
+    }
+
+    /// Update the path for a track (after format conversion).
+    /// Returns true if the entry was found and updated.
+    pub fn update_path(&mut self, old_path: &str, new_path: &str) -> bool {
+        // Find the entry with the old path
+        let entry = self.tracks.iter().find(|t| t.path == old_path).cloned();
+
+        if let Some(old_entry) = entry {
+            // Remove old entry and insert updated one
+            self.tracks.remove(&old_entry);
+            let new_entry = TrackEntry {
+                artist: old_entry.artist,
+                title: old_entry.title,
+                path: new_path.to_string(),
+            };
+            self.tracks.insert(new_entry);
+            self.save();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove a track entry by its file path.
+    /// Returns true if the entry was found and removed.
+    pub fn remove_by_path(&mut self, path: &str) -> bool {
+        let entry = self.tracks.iter().find(|t| t.path == path).cloned();
+
+        if let Some(old_entry) = entry {
+            self.tracks.remove(&old_entry);
+            self.save();
+            true
+        } else {
+            false
+        }
+    }
+
     fn save(&self) {
         if let Some(parent) = std::path::Path::new(&self.file_path).parent() {
             let _ = std::fs::create_dir_all(parent);

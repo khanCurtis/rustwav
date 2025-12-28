@@ -3,6 +3,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::{
     cli::PortableConfig,
+    converter,
     db::{DownloadDB, TrackEntry},
     downloader, file_utils, metadata,
     sources::spotify,
@@ -23,6 +24,15 @@ pub enum DownloadRequest {
         portable: bool,
         format: String,
         quality: String,
+    },
+    Convert {
+        id: usize,
+        input_path: String,
+        target_format: String,
+        quality: String,
+        refresh_metadata: bool,
+        artist: String,
+        title: String,
     },
 }
 
@@ -85,6 +95,30 @@ pub enum DownloadEvent {
         missing: usize,
         paths: Vec<std::path::PathBuf>,
     },
+    /// Conversion started
+    ConvertStarted {
+        id: usize,
+        path: String,
+        target_format: String,
+    },
+    /// Conversion complete
+    ConvertComplete {
+        id: usize,
+        old_path: String,
+        new_path: String,
+    },
+    /// Conversion failed
+    ConvertFailed {
+        id: usize,
+        path: String,
+        error: String,
+    },
+    /// Ask user to confirm deletion of original
+    ConvertDeleteConfirm {
+        id: usize,
+        old_path: String,
+        new_path: String,
+    },
 }
 
 pub struct DownloadWorker {
@@ -140,6 +174,26 @@ impl DownloadWorker {
                 } => {
                     self.process_playlist(id, &link, portable, &format, &quality)
                         .await;
+                }
+                DownloadRequest::Convert {
+                    id,
+                    input_path,
+                    target_format,
+                    quality,
+                    refresh_metadata,
+                    artist,
+                    title,
+                } => {
+                    self.process_convert(
+                        id,
+                        &input_path,
+                        &target_format,
+                        &quality,
+                        refresh_metadata,
+                        &artist,
+                        &title,
+                    )
+                    .await;
                 }
             }
         }
@@ -654,5 +708,170 @@ impl DownloadWorker {
                 name: playlist_name,
             })
             .await;
+    }
+
+    async fn process_convert(
+        &mut self,
+        id: usize,
+        input_path: &str,
+        target_format: &str,
+        quality: &str,
+        refresh_metadata: bool,
+        artist: &str,
+        title: &str,
+    ) {
+        let input = std::path::Path::new(input_path);
+
+        // Send started event
+        let _ = self
+            .tx
+            .send(DownloadEvent::ConvertStarted {
+                id,
+                path: input_path.to_string(),
+                target_format: target_format.to_string(),
+            })
+            .await;
+
+        self.send_log(
+            id,
+            format!("Converting {} to {}", input_path, target_format),
+        )
+        .await;
+
+        // Perform conversion in blocking thread
+        let input_clone = input.to_path_buf();
+        let format_clone = target_format.to_string();
+        let quality_clone = quality.to_string();
+        let tx_clone = self.tx.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            converter::convert_audio(&input_clone, &format_clone, &quality_clone, move |line| {
+                let tx = tx_clone.clone();
+                let line = line.to_string();
+                let _ = tx.blocking_send(DownloadEvent::LogLine { id, line });
+            })
+        })
+        .await;
+
+        match result {
+            Ok(Ok(new_path)) => {
+                let new_path_str = new_path.display().to_string();
+                self.send_log(id, format!("Conversion complete: {}", new_path_str))
+                    .await;
+
+                // Refresh metadata if requested
+                if refresh_metadata {
+                    self.send_log(id, format!("Refreshing metadata for: {} - {}", artist, title))
+                        .await;
+
+                    match spotify::search_track(artist, title).await {
+                        Ok(Some(meta)) => {
+                            // Download cover art if available
+                            let cover_path = if let Some(url) = &meta.cover_url {
+                                let cover_file = new_path.with_file_name("temp_cover.jpg");
+                                if let Ok(response) = reqwest::get(url).await {
+                                    if let Ok(bytes) = response.bytes().await {
+                                        let _ = std::fs::write(&cover_file, &bytes);
+                                        Some(cover_file)
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
+                            // Apply metadata
+                            let config = PortableConfig {
+                                enabled: false,
+                                max_cover_dim: 500,
+                                max_cover_bytes: 300 * 1024,
+                                max_filename_len: 100,
+                            };
+
+                            if let Err(e) = metadata::tag_audio(
+                                &new_path,
+                                &meta.artist,
+                                &meta.album,
+                                &meta.title,
+                                meta.track_number,
+                                cover_path.as_deref(),
+                                &config,
+                            ) {
+                                self.send_log(id, format!("Warning: Failed to apply metadata: {}", e))
+                                    .await;
+                            } else {
+                                self.send_log(id, "Metadata refreshed successfully".to_string())
+                                    .await;
+                            }
+
+                            // Clean up temp cover
+                            if let Some(cover) = cover_path {
+                                let _ = std::fs::remove_file(cover);
+                            }
+                        }
+                        Ok(None) => {
+                            self.send_log(
+                                id,
+                                "Could not find track on Spotify, keeping existing metadata"
+                                    .to_string(),
+                            )
+                            .await;
+                        }
+                        Err(e) => {
+                            self.send_log(id, format!("Spotify search failed: {}", e))
+                                .await;
+                        }
+                    }
+                }
+
+                // Update database with new path
+                self.db.update_path(input_path, &new_path_str);
+
+                // Ask for deletion confirmation
+                let _ = self
+                    .tx
+                    .send(DownloadEvent::ConvertDeleteConfirm {
+                        id,
+                        old_path: input_path.to_string(),
+                        new_path: new_path_str.clone(),
+                    })
+                    .await;
+
+                let _ = self
+                    .tx
+                    .send(DownloadEvent::ConvertComplete {
+                        id,
+                        old_path: input_path.to_string(),
+                        new_path: new_path_str,
+                    })
+                    .await;
+            }
+            Ok(Err(e)) => {
+                self.send_log(id, format!("Conversion failed: {}", e)).await;
+                let _ = self
+                    .tx
+                    .send(DownloadEvent::ConvertFailed {
+                        id,
+                        path: input_path.to_string(),
+                        error: e.to_string(),
+                    })
+                    .await;
+            }
+            Err(e) => {
+                self.send_log(id, format!("Conversion task failed: {}", e))
+                    .await;
+                let _ = self
+                    .tx
+                    .send(DownloadEvent::ConvertFailed {
+                        id,
+                        path: input_path.to_string(),
+                        error: e.to_string(),
+                    })
+                    .await;
+            }
+        }
     }
 }

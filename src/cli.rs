@@ -60,5 +60,27 @@ pub enum Commands {
         quality: String,
         link: String,
     },
+    /// Convert audio files between formats (mp3, flac, wav, aac)
+    Convert {
+        /// Input file or directory to convert
+        #[arg(short, long)]
+        input: String,
+
+        /// Target format (mp3, flac, wav, aac)
+        #[arg(short = 't', long, default_value = "mp3")]
+        to: String,
+
+        /// Quality for lossy formats (high, medium, low)
+        #[arg(short, long, default_value = "high")]
+        quality: String,
+
+        /// Refresh metadata from Spotify after conversion
+        #[arg(long, default_value_t = true)]
+        refresh_metadata: bool,
+
+        /// Process directories recursively
+        #[arg(short, long, default_value_t = false)]
+        recursive: bool,
+    },
 }
 

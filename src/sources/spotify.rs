@@ -1,8 +1,18 @@
 use anyhow::Result;
 use futures::stream::TryStreamExt;
 use rspotify::clients::BaseClient;
-use rspotify::model::{AlbumId, FullAlbum, FullPlaylist, PlaylistId, PlaylistItem};
+use rspotify::model::{AlbumId, FullAlbum, FullPlaylist, PlaylistId, PlaylistItem, SearchType};
 use rspotify::{ClientCredsSpotify, Credentials};
+
+/// Metadata fetched from Spotify for a track
+#[derive(Debug, Clone)]
+pub struct TrackMetadata {
+    pub artist: String,
+    pub album: String,
+    pub title: String,
+    pub track_number: u32,
+    pub cover_url: Option<String>,
+}
 
 async fn get_spotify_client() -> Result<ClientCredsSpotify, anyhow::Error> {
     let creds = Credentials::from_env().ok_or_else(|| {
@@ -58,4 +68,48 @@ fn extract_id<'a>(link: &'a str, kind: &str) -> Result<&'a str, anyhow::Error> {
         anyhow::bail!("Could not extract {} ID from link: {}", kind, link);
     }
     Ok(link)
+}
+
+/// Search for a track on Spotify by artist and title.
+/// Returns metadata if found, None if no results.
+pub async fn search_track(artist: &str, title: &str) -> Result<Option<TrackMetadata>, anyhow::Error> {
+    let spotify = get_spotify_client().await?;
+
+    // Build search query with artist and track filters
+    let query = format!("artist:{} track:{}", artist, title);
+
+    let result = spotify
+        .search(&query, SearchType::Track, None, None, Some(1), None)
+        .await?;
+
+    // Extract track from search results
+    if let rspotify::model::SearchResult::Tracks(tracks) = result {
+        if let Some(track) = tracks.items.into_iter().next() {
+            let artist_name = track
+                .artists
+                .first()
+                .map(|a| a.name.clone())
+                .unwrap_or_else(|| artist.to_string());
+
+            let album_name = track.album.name.clone();
+            let track_title = track.name.clone();
+            let track_number = track.track_number;
+
+            let cover_url = track
+                .album
+                .images
+                .first()
+                .map(|img| img.url.clone());
+
+            return Ok(Some(TrackMetadata {
+                artist: artist_name,
+                album: album_name,
+                title: track_title,
+                track_number,
+                cover_url,
+            }));
+        }
+    }
+
+    Ok(None)
 }

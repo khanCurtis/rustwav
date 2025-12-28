@@ -39,7 +39,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let selected = match app.view {
         View::Main | View::AddLink | View::LinkSettings | View::GenerateM3U | View::M3UConfirm => 0,
         View::Queue => 1,
-        View::Library => 2,
+        View::Library | View::ConvertSettings | View::ConvertConfirm => 2,
         View::Logs => 3,
     };
 
@@ -70,6 +70,8 @@ fn draw_main(frame: &mut Frame, app: &App, area: Rect) {
         View::Logs => draw_logs_view(frame, app, area),
         View::GenerateM3U => draw_generate_m3u_view(frame, app, area),
         View::M3UConfirm => draw_m3u_confirm_view(frame, app, area),
+        View::ConvertSettings => draw_convert_settings_view(frame, app, area),
+        View::ConvertConfirm => draw_convert_confirm_view(frame, app, area),
     }
 }
 
@@ -389,6 +391,11 @@ fn draw_library_view(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(area);
+
     let items: Vec<ListItem> = app
         .library
         .iter()
@@ -411,10 +418,15 @@ fn draw_library_view(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let title = format!(" Library ({} tracks) ", app.library.len());
+    let title = format!(" Library ({} tracks) - Press 'c' to convert ", app.library.len());
     let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
 
-    frame.render_widget(list, area);
+    frame.render_widget(list, chunks[0]);
+
+    // Help hint at bottom
+    let help = Paragraph::new(" ↑/↓ Navigate  |  c Convert  |  r Refresh  |  Tab Switch view")
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(help, chunks[1]);
 }
 
 fn draw_logs_view(frame: &mut Frame, app: &App, area: Rect) {
@@ -580,6 +592,161 @@ fn draw_m3u_confirm_view(frame: &mut Frame, app: &App, area: Rect) {
                 Span::raw(" or "),
                 Span::styled("n", Style::default().fg(Color::Red)),
                 Span::raw(" to cancel"),
+            ]),
+        ];
+
+        let paragraph = Paragraph::new(text);
+        frame.render_widget(paragraph, inner);
+    }
+}
+
+fn draw_convert_settings_view(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Convert Audio ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // Track info
+            Constraint::Length(2), // Format row
+            Constraint::Length(2), // Quality row
+            Constraint::Length(2), // Refresh metadata toggle
+            Constraint::Min(0),    // Help text
+        ])
+        .margin(1)
+        .split(inner);
+
+    // Track info
+    if let Some(ref pending) = app.convert_pending {
+        let track_info = Line::from(vec![
+            Span::styled("  Track: ", Style::default().fg(Color::White)),
+            Span::styled(&pending.artist, Style::default().fg(Color::Yellow)),
+            Span::raw(" - "),
+            Span::styled(&pending.title, Style::default().fg(Color::Cyan)),
+        ]);
+        frame.render_widget(Paragraph::new(track_info), chunks[0]);
+    }
+
+    // Format selection
+    let mut format_spans = vec![Span::styled(
+        "  Format:   ",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )];
+
+    for (i, fmt) in FORMAT_OPTIONS.iter().enumerate() {
+        let is_selected = i == app.convert_target_format;
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        format_spans.push(Span::styled(format!(" {} ", fmt), style));
+    }
+
+    let format_line = Paragraph::new(Line::from(format_spans));
+    frame.render_widget(format_line, chunks[1]);
+
+    // Quality selection
+    let mut quality_spans = vec![Span::styled("  Quality:  ", Style::default().fg(Color::White))];
+
+    for (i, q) in QUALITY_OPTIONS.iter().enumerate() {
+        let is_selected = i == app.convert_quality;
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Green)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        quality_spans.push(Span::styled(format!(" {} ", q), style));
+    }
+
+    let quality_line = Paragraph::new(Line::from(quality_spans));
+    frame.render_widget(quality_line, chunks[2]);
+
+    // Refresh metadata toggle
+    let refresh_status = if app.convert_refresh_metadata {
+        Span::styled("[x] Refresh metadata from Spotify", Style::default().fg(Color::Green))
+    } else {
+        Span::styled("[ ] Refresh metadata from Spotify", Style::default().fg(Color::DarkGray))
+    };
+    let refresh_line = Paragraph::new(Line::from(vec![Span::raw("  "), refresh_status]));
+    frame.render_widget(refresh_line, chunks[3]);
+
+    // Help text
+    let help_text = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  ←/→", Style::default().fg(Color::Yellow)),
+            Span::raw("  Change format    "),
+            Span::styled("h/l", Style::default().fg(Color::Yellow)),
+            Span::raw("  Change quality"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Space", Style::default().fg(Color::Yellow)),
+            Span::raw("  Toggle metadata refresh"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Enter", Style::default().fg(Color::Yellow)),
+            Span::raw("  Start conversion   "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw("  Cancel"),
+        ]),
+    ];
+
+    let help = Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(help, chunks[4]);
+}
+
+fn draw_convert_confirm_view(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Delete Original File? ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if let Some(ref pending) = app.convert_delete_pending {
+        let text = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Conversion completed successfully!",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("  Old: "),
+                Span::styled(&pending.old_path, Style::default().fg(Color::Yellow)),
+            ]),
+            Line::from(vec![
+                Span::raw("  New: "),
+                Span::styled(&pending.new_path, Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Do you want to delete the original file?",
+                Style::default().fg(Color::White),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("  Press "),
+                Span::styled("y", Style::default().fg(Color::Green)),
+                Span::raw(" to delete original"),
+            ]),
+            Line::from(vec![
+                Span::raw("  Press "),
+                Span::styled("n", Style::default().fg(Color::Red)),
+                Span::raw(" to keep both files"),
             ]),
         ];
 
