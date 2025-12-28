@@ -418,13 +418,13 @@ fn draw_library_view(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let title = format!(" Library ({} tracks) - Press 'c' to convert ", app.library.len());
+    let title = format!(" Library ({} tracks) - 'c' convert, 'C' convert all ", app.library.len());
     let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
 
     frame.render_widget(list, chunks[0]);
 
     // Help hint at bottom
-    let help = Paragraph::new(" ↑/↓ Navigate  |  c Convert  |  r Refresh  |  Tab Switch view")
+    let help = Paragraph::new(" ↑/↓ Navigate  |  c Convert  |  C Convert All  |  r Refresh  |  Tab Switch view")
         .style(Style::default().fg(Color::DarkGray));
     frame.render_widget(help, chunks[1]);
 }

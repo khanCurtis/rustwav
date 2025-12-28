@@ -89,8 +89,10 @@ fn handle_normal_mode(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
     match key {
         KeyCode::Char('q') => app.quit(),
         KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => app.quit(),
-        // 'c' in Library view starts conversion
+        // 'c' in Library view starts conversion for selected track
         KeyCode::Char('c') if app.view == View::Library => app.start_convert(),
+        // 'C' in Library view starts conversion for ALL tracks
+        KeyCode::Char('C') if app.view == View::Library => app.start_convert_all(),
         KeyCode::Tab => app.next_view(),
         KeyCode::Char('a') => app.start_add_album(),
         KeyCode::Char('p') => app.start_add_playlist(),

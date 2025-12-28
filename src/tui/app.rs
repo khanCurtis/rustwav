@@ -99,6 +99,7 @@ pub struct App {
     pub convert_quality: usize,
     pub convert_refresh_metadata: bool,
     pub convert_delete_pending: Option<ConvertDeletePending>,
+    pub convert_all_mode: bool,
 }
 
 /// Pending M3U data waiting for user confirmation
@@ -184,6 +185,7 @@ impl App {
             convert_quality: 0,
             convert_refresh_metadata: true,
             convert_delete_pending: None,
+            convert_all_mode: false,
         }
     }
 
@@ -744,6 +746,7 @@ impl App {
             return;
         }
 
+        self.convert_all_mode = false;
         let selected = &self.library[self.library_selected];
         self.convert_pending = Some(ConvertPending {
             track_path: selected.path.clone(),
@@ -757,6 +760,26 @@ impl App {
         );
     }
 
+    pub fn start_convert_all(&mut self) {
+        if self.library.is_empty() {
+            self.status_message = "Library is empty, nothing to convert".to_string();
+            return;
+        }
+
+        self.convert_all_mode = true;
+        // Use a placeholder pending entry - we'll process all tracks on submit
+        self.convert_pending = Some(ConvertPending {
+            track_path: String::new(),
+            artist: String::new(),
+            title: String::new(),
+        });
+        self.view = View::ConvertSettings;
+        self.status_message = format!(
+            "Convert ALL {} tracks. Select format and press Enter.",
+            self.library.len()
+        );
+    }
+
     pub fn cancel_convert(&mut self) {
         self.convert_pending = None;
         self.view = View::Library;
@@ -764,39 +787,72 @@ impl App {
     }
 
     pub fn submit_convert(&mut self) {
-        let pending = match self.convert_pending.take() {
-            Some(p) => p,
-            None => {
-                self.view = View::Library;
-                self.status_message = "No conversion pending".to_string();
-                return;
-            }
-        };
+        if self.convert_pending.is_none() {
+            self.view = View::Library;
+            self.status_message = "No conversion pending".to_string();
+            return;
+        }
+        self.convert_pending = None;
 
         self.view = View::Logs;
-        self.next_id += 1;
-        let id = self.next_id;
 
         let format = FORMAT_OPTIONS[self.convert_target_format].to_string();
         let quality = QUALITY_OPTIONS[self.convert_quality].to_string();
         let refresh_metadata = self.convert_refresh_metadata;
 
-        let request = DownloadRequest::Convert {
-            id,
-            input_path: pending.track_path,
-            target_format: format.clone(),
-            quality: quality.clone(),
-            refresh_metadata,
-            artist: pending.artist,
-            title: pending.title,
-        };
+        if self.convert_all_mode {
+            // Queue conversion for all tracks in the library
+            let tracks: Vec<_> = self.library.iter().cloned().collect();
+            let track_count = tracks.len();
 
-        let tx = self.download_tx.clone();
-        tokio::spawn(async move {
-            let _ = tx.send(request).await;
-        });
+            for track in tracks {
+                self.next_id += 1;
+                let id = self.next_id;
 
-        self.status_message = format!("Converting to {} (quality: {})...", format, quality);
+                let request = DownloadRequest::Convert {
+                    id,
+                    input_path: track.path,
+                    target_format: format.clone(),
+                    quality: quality.clone(),
+                    refresh_metadata,
+                    artist: track.artist,
+                    title: track.title,
+                };
+
+                let tx = self.download_tx.clone();
+                tokio::spawn(async move {
+                    let _ = tx.send(request).await;
+                });
+            }
+
+            self.convert_all_mode = false;
+            self.status_message = format!(
+                "Converting {} tracks to {} (quality: {})...",
+                track_count, format, quality
+            );
+        } else {
+            // Single track conversion (use selected track)
+            let selected = &self.library[self.library_selected];
+            self.next_id += 1;
+            let id = self.next_id;
+
+            let request = DownloadRequest::Convert {
+                id,
+                input_path: selected.path.clone(),
+                target_format: format.clone(),
+                quality: quality.clone(),
+                refresh_metadata,
+                artist: selected.artist.clone(),
+                title: selected.title.clone(),
+            };
+
+            let tx = self.download_tx.clone();
+            tokio::spawn(async move {
+                let _ = tx.send(request).await;
+            });
+
+            self.status_message = format!("Converting to {} (quality: {})...", format, quality);
+        }
     }
 
     pub fn convert_settings_up(&mut self) {
