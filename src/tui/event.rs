@@ -17,6 +17,7 @@ pub fn handle_events(app: &mut App) -> anyhow::Result<()> {
                     View::ConvertConfirm => handle_convert_confirm_mode(app, key.code),
                     View::ConvertBatchConfirm => handle_convert_batch_confirm_mode(app, key.code),
                     View::CleanupConfirm => handle_cleanup_confirm_mode(app, key.code),
+                    View::ErrorLog => handle_error_log_mode(app, key.code, key.modifiers),
                     _ => handle_normal_mode(app, key.code, key.modifiers),
                 }
             }
@@ -106,6 +107,7 @@ fn handle_normal_mode(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('p') => app.start_add_playlist(),
         KeyCode::Char('P') => app.toggle_portable(),
         KeyCode::Char('l') => app.show_logs(),
+        KeyCode::Char('e') => app.show_error_log(),
         KeyCode::Char('m') => app.start_generate_m3u(),
         KeyCode::Char(' ') => app.toggle_pause(),
         KeyCode::Up | KeyCode::Char('k') => match app.view {
@@ -156,6 +158,36 @@ fn handle_cleanup_confirm_mode(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Char('y') => app.confirm_cleanup(),
         KeyCode::Char('n') | KeyCode::Esc => app.cancel_cleanup(),
+        _ => {}
+    }
+}
+
+fn handle_error_log_mode(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
+    match key {
+        KeyCode::Char('q') => app.quit(),
+        KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => app.quit(),
+        KeyCode::Esc => {
+            app.view = View::Main;
+            app.status_message = "Returned to main view".to_string();
+        }
+        // Date navigation
+        KeyCode::Left | KeyCode::Char('h') => app.error_date_prev(),
+        KeyCode::Right | KeyCode::Char('l') => app.error_date_next(),
+        // Tab navigation
+        KeyCode::Tab => app.error_tab_next(),
+        KeyCode::BackTab => app.error_tab_prev(),
+        // Error list navigation
+        KeyCode::Up | KeyCode::Char('k') => app.error_up(),
+        KeyCode::Down | KeyCode::Char('j') => app.error_down(),
+        // Delete selected error
+        KeyCode::Char('d') => app.delete_selected_error(),
+        // Clear all errors for current date
+        KeyCode::Char('D') => app.clear_current_date_errors(),
+        // Refresh
+        KeyCode::Char('r') => {
+            app.refresh_error_logs();
+            app.status_message = "Error logs refreshed".to_string();
+        }
         _ => {}
     }
 }

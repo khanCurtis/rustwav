@@ -5,7 +5,9 @@ use crate::{
     cli::PortableConfig,
     converter,
     db::{DownloadDB, TrackEntry},
-    downloader, file_utils, metadata,
+    downloader,
+    error_log::{ConvertErrorEntry, DownloadErrorEntry, ErrorLogManager, RefreshErrorEntry},
+    file_utils, metadata,
     sources::spotify,
 };
 
@@ -187,6 +189,7 @@ pub struct DownloadWorker {
     music_path: PathBuf,
     playlist_path: PathBuf,
     db: DownloadDB,
+    error_log: ErrorLogManager,
 }
 
 impl DownloadWorker {
@@ -208,6 +211,7 @@ impl DownloadWorker {
             music_path,
             playlist_path,
             db: DownloadDB::new("data/cache/downloaded_songs.json"),
+            error_log: ErrorLogManager::new("data/errors"),
         }
     }
 
@@ -335,6 +339,17 @@ impl DownloadWorker {
             Ok(a) => a,
             Err(e) => {
                 let error_msg = Self::format_error_with_hint(&e, "album");
+                // Log error for retry
+                self.error_log.add_download_error(DownloadErrorEntry::new(
+                    link.to_string(),
+                    "album".to_string(),
+                    format.to_string(),
+                    quality.to_string(),
+                    portable,
+                    None,
+                    None,
+                    format!("Failed to fetch album: {}", error_msg),
+                ));
                 let _ = self
                     .tx
                     .send(DownloadEvent::Error {
@@ -489,13 +504,25 @@ impl DownloadWorker {
                         cover_path.as_deref(),
                         &config,
                     ) {
+                        let error_msg = format!("Tagging failed: {}", e);
+                        // Log error for retry
+                        self.error_log.add_download_error(DownloadErrorEntry::new(
+                            link.to_string(),
+                            "album".to_string(),
+                            actual_format.to_string(),
+                            quality.to_string(),
+                            portable,
+                            Some(track_artist.clone()),
+                            Some(track_title.clone()),
+                            error_msg.clone(),
+                        ));
                         let _ = self
                             .tx
                             .send(DownloadEvent::TrackFailed {
                                 id,
                                 artist: track_artist,
                                 title: track_title,
-                                error: format!("Tagging failed: {}", e),
+                                error: error_msg,
                             })
                             .await;
                         continue;
@@ -513,24 +540,48 @@ impl DownloadWorker {
                         .await;
                 }
                 Ok(Err(e)) => {
+                    let error_msg = e.to_string();
+                    // Log error for retry
+                    self.error_log.add_download_error(DownloadErrorEntry::new(
+                        link.to_string(),
+                        "album".to_string(),
+                        actual_format.to_string(),
+                        quality.to_string(),
+                        portable,
+                        Some(track_artist.clone()),
+                        Some(track_title.clone()),
+                        error_msg.clone(),
+                    ));
                     let _ = self
                         .tx
                         .send(DownloadEvent::TrackFailed {
                             id,
                             artist: track_artist,
                             title: track_title,
-                            error: e.to_string(),
+                            error: error_msg,
                         })
                         .await;
                 }
                 Err(e) => {
+                    let error_msg = e.to_string();
+                    // Log error for retry
+                    self.error_log.add_download_error(DownloadErrorEntry::new(
+                        link.to_string(),
+                        "album".to_string(),
+                        actual_format.to_string(),
+                        quality.to_string(),
+                        portable,
+                        Some(track_artist.clone()),
+                        Some(track_title.clone()),
+                        error_msg.clone(),
+                    ));
                     let _ = self
                         .tx
                         .send(DownloadEvent::TrackFailed {
                             id,
                             artist: track_artist,
                             title: track_title,
-                            error: e.to_string(),
+                            error: error_msg,
                         })
                         .await;
                 }
@@ -581,6 +632,17 @@ impl DownloadWorker {
             Ok(p) => p,
             Err(e) => {
                 let error_msg = Self::format_error_with_hint(&e, "playlist");
+                // Log error for retry
+                self.error_log.add_download_error(DownloadErrorEntry::new(
+                    link.to_string(),
+                    "playlist".to_string(),
+                    format.to_string(),
+                    quality.to_string(),
+                    portable,
+                    None,
+                    None,
+                    format!("Failed to fetch playlist: {}", error_msg),
+                ));
                 let _ = self
                     .tx
                     .send(DownloadEvent::Error {
@@ -610,6 +672,17 @@ impl DownloadWorker {
         let all_items = match spotify::fetch_all_playlist_items(link).await {
             Ok(items) => items,
             Err(e) => {
+                // Log error for retry
+                self.error_log.add_download_error(DownloadErrorEntry::new(
+                    link.to_string(),
+                    "playlist".to_string(),
+                    format.to_string(),
+                    quality.to_string(),
+                    portable,
+                    None,
+                    Some(playlist_name.clone()),
+                    format!("Failed to fetch playlist tracks: {}", e),
+                ));
                 let _ = self
                     .tx
                     .send(DownloadEvent::Error {
@@ -737,13 +810,25 @@ impl DownloadWorker {
                         None,
                         &config,
                     ) {
+                        let error_msg = format!("Tagging failed: {}", e);
+                        // Log error for retry
+                        self.error_log.add_download_error(DownloadErrorEntry::new(
+                            link.to_string(),
+                            "playlist".to_string(),
+                            actual_format.to_string(),
+                            quality.to_string(),
+                            portable,
+                            Some(track_artist.clone()),
+                            Some(track_title.clone()),
+                            error_msg.clone(),
+                        ));
                         let _ = self
                             .tx
                             .send(DownloadEvent::TrackFailed {
                                 id,
                                 artist: track_artist,
                                 title: track_title,
-                                error: format!("Tagging failed: {}", e),
+                                error: error_msg,
                             })
                             .await;
                         continue;
@@ -762,24 +847,48 @@ impl DownloadWorker {
                         .await;
                 }
                 Ok(Err(e)) => {
+                    let error_msg = e.to_string();
+                    // Log error for retry
+                    self.error_log.add_download_error(DownloadErrorEntry::new(
+                        link.to_string(),
+                        "playlist".to_string(),
+                        actual_format.to_string(),
+                        quality.to_string(),
+                        portable,
+                        Some(track_artist.clone()),
+                        Some(track_title.clone()),
+                        error_msg.clone(),
+                    ));
                     let _ = self
                         .tx
                         .send(DownloadEvent::TrackFailed {
                             id,
                             artist: track_artist,
                             title: track_title,
-                            error: e.to_string(),
+                            error: error_msg,
                         })
                         .await;
                 }
                 Err(e) => {
+                    let error_msg = e.to_string();
+                    // Log error for retry
+                    self.error_log.add_download_error(DownloadErrorEntry::new(
+                        link.to_string(),
+                        "playlist".to_string(),
+                        actual_format.to_string(),
+                        quality.to_string(),
+                        portable,
+                        Some(track_artist.clone()),
+                        Some(track_title.clone()),
+                        error_msg.clone(),
+                    ));
                     let _ = self
                         .tx
                         .send(DownloadEvent::TrackFailed {
                             id,
                             artist: track_artist,
                             title: track_title,
-                            error: e.to_string(),
+                            error: error_msg,
                         })
                         .await;
                 }
@@ -937,25 +1046,47 @@ impl DownloadWorker {
                     .await;
             }
             Ok(Err(e)) => {
-                self.send_log(id, format!("Conversion failed: {}", e)).await;
+                let error_msg = e.to_string();
+                self.send_log(id, format!("Conversion failed: {}", error_msg)).await;
+                // Log error for retry
+                self.error_log.add_convert_error(ConvertErrorEntry::new(
+                    input_path.to_string(),
+                    target_format.to_string(),
+                    quality.to_string(),
+                    refresh_metadata,
+                    artist.to_string(),
+                    title.to_string(),
+                    error_msg.clone(),
+                ));
                 let _ = self
                     .tx
                     .send(DownloadEvent::ConvertFailed {
                         id,
                         path: input_path.to_string(),
-                        error: e.to_string(),
+                        error: error_msg,
                     })
                     .await;
             }
             Err(e) => {
-                self.send_log(id, format!("Conversion task failed: {}", e))
+                let error_msg = e.to_string();
+                self.send_log(id, format!("Conversion task failed: {}", error_msg))
                     .await;
+                // Log error for retry
+                self.error_log.add_convert_error(ConvertErrorEntry::new(
+                    input_path.to_string(),
+                    target_format.to_string(),
+                    quality.to_string(),
+                    refresh_metadata,
+                    artist.to_string(),
+                    title.to_string(),
+                    error_msg.clone(),
+                ));
                 let _ = self
                     .tx
                     .send(DownloadEvent::ConvertFailed {
                         id,
                         path: input_path.to_string(),
-                        error: e.to_string(),
+                        error: error_msg,
                     })
                     .await;
             }
@@ -1084,32 +1215,54 @@ impl DownloadWorker {
                         .await;
                 }
                 Ok(Err(e)) => {
+                    let error_msg = e.to_string();
                     self.send_log(
                         id,
-                        format!("Failed to convert {} - {}: {}", track.artist, track.title, e),
+                        format!("Failed to convert {} - {}: {}", track.artist, track.title, error_msg),
                     )
                     .await;
+                    // Log error for retry
+                    self.error_log.add_convert_error(ConvertErrorEntry::new(
+                        track.input_path.clone(),
+                        target_format.to_string(),
+                        quality.to_string(),
+                        refresh_metadata,
+                        track.artist.clone(),
+                        track.title.clone(),
+                        error_msg.clone(),
+                    ));
                     let _ = self
                         .tx
                         .send(DownloadEvent::ConvertFailed {
                             id,
                             path: track.input_path.clone(),
-                            error: e.to_string(),
+                            error: error_msg,
                         })
                         .await;
                 }
                 Err(e) => {
+                    let error_msg = e.to_string();
                     self.send_log(
                         id,
-                        format!("Task failed for {} - {}: {}", track.artist, track.title, e),
+                        format!("Task failed for {} - {}: {}", track.artist, track.title, error_msg),
                     )
                     .await;
+                    // Log error for retry
+                    self.error_log.add_convert_error(ConvertErrorEntry::new(
+                        track.input_path.clone(),
+                        target_format.to_string(),
+                        quality.to_string(),
+                        refresh_metadata,
+                        track.artist.clone(),
+                        track.title.clone(),
+                        error_msg.clone(),
+                    ));
                     let _ = self
                         .tx
                         .send(DownloadEvent::ConvertFailed {
                             id,
                             path: track.input_path.clone(),
-                            error: e.to_string(),
+                            error: error_msg,
                         })
                         .await;
                 }
@@ -1204,15 +1357,23 @@ impl DownloadWorker {
                     cover_path.as_deref(),
                     &config,
                 ) {
-                    self.send_log(id, format!("Failed to apply metadata: {}", e))
+                    let error_msg = e.to_string();
+                    self.send_log(id, format!("Failed to apply metadata: {}", error_msg))
                         .await;
+                    // Log error for retry
+                    self.error_log.add_refresh_error(RefreshErrorEntry::new(
+                        input_path.to_string(),
+                        artist.to_string(),
+                        title.to_string(),
+                        format!("Failed to apply metadata: {}", error_msg),
+                    ));
                     let _ = self
                         .tx
                         .send(DownloadEvent::RefreshFailed {
                             id,
                             artist: artist.to_string(),
                             title: title.to_string(),
-                            error: e.to_string(),
+                            error: error_msg,
                         })
                         .await;
                 } else {
@@ -1234,31 +1395,47 @@ impl DownloadWorker {
                 }
             }
             Ok(None) => {
+                let error_msg = "Track not found on Spotify".to_string();
                 self.send_log(
                     id,
                     format!("Could not find {} - {} on Spotify", artist, title),
                 )
                 .await;
+                // Log error for retry
+                self.error_log.add_refresh_error(RefreshErrorEntry::new(
+                    input_path.to_string(),
+                    artist.to_string(),
+                    title.to_string(),
+                    error_msg.clone(),
+                ));
                 let _ = self
                     .tx
                     .send(DownloadEvent::RefreshFailed {
                         id,
                         artist: artist.to_string(),
                         title: title.to_string(),
-                        error: "Track not found on Spotify".to_string(),
+                        error: error_msg,
                     })
                     .await;
             }
             Err(e) => {
-                self.send_log(id, format!("Spotify search failed: {}", e))
+                let error_msg = e.to_string();
+                self.send_log(id, format!("Spotify search failed: {}", error_msg))
                     .await;
+                // Log error for retry
+                self.error_log.add_refresh_error(RefreshErrorEntry::new(
+                    input_path.to_string(),
+                    artist.to_string(),
+                    title.to_string(),
+                    format!("Spotify search failed: {}", error_msg),
+                ));
                 let _ = self
                     .tx
                     .send(DownloadEvent::RefreshFailed {
                         id,
                         artist: artist.to_string(),
                         title: title.to_string(),
-                        error: e.to_string(),
+                        error: error_msg,
                     })
                     .await;
             }
@@ -1345,13 +1522,21 @@ impl DownloadWorker {
                             })
                             .await;
                     } else {
+                        let error_msg = "Failed to apply metadata".to_string();
+                        // Log error for retry
+                        self.error_log.add_refresh_error(RefreshErrorEntry::new(
+                            track.input_path.clone(),
+                            track.artist.clone(),
+                            track.title.clone(),
+                            error_msg.clone(),
+                        ));
                         let _ = self
                             .tx
                             .send(DownloadEvent::RefreshFailed {
                                 id,
                                 artist: track.artist.clone(),
                                 title: track.title.clone(),
-                                error: "Failed to apply metadata".to_string(),
+                                error: error_msg,
                             })
                             .await;
                     }
@@ -1361,17 +1546,33 @@ impl DownloadWorker {
                     }
                 }
                 Ok(None) => {
+                    let error_msg = "Track not found on Spotify".to_string();
+                    // Log error for retry
+                    self.error_log.add_refresh_error(RefreshErrorEntry::new(
+                        track.input_path.clone(),
+                        track.artist.clone(),
+                        track.title.clone(),
+                        error_msg.clone(),
+                    ));
                     let _ = self
                         .tx
                         .send(DownloadEvent::RefreshFailed {
                             id,
                             artist: track.artist.clone(),
                             title: track.title.clone(),
-                            error: "Track not found on Spotify".to_string(),
+                            error: error_msg,
                         })
                         .await;
                 }
                 Err(e) => {
+                    let error_msg = e.to_string();
+                    // Log error for retry
+                    self.error_log.add_refresh_error(RefreshErrorEntry::new(
+                        track.input_path.clone(),
+                        track.artist.clone(),
+                        track.title.clone(),
+                        format!("Spotify search failed: {}", error_msg),
+                    ));
                     let _ = self
                         .tx
                         .send(DownloadEvent::RefreshFailed {

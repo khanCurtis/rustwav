@@ -1,4 +1,7 @@
 use crate::db::{DownloadDB, TrackEntry};
+use crate::error_log::{
+    ConvertErrorEntry, DownloadErrorEntry, ErrorLogManager, RefreshErrorEntry,
+};
 use crate::file_utils;
 use crate::spotify;
 use std::collections::VecDeque;
@@ -25,6 +28,15 @@ pub enum View {
     ConvertConfirm,
     ConvertBatchConfirm,
     CleanupConfirm,
+    ErrorLog,
+}
+
+/// Tab for error log view (Download/Convert/Refresh)
+#[derive(Debug, Clone, PartialEq)]
+pub enum ErrorTab {
+    Download,
+    Convert,
+    Refresh,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -105,6 +117,15 @@ pub struct App {
     pub convert_batch_delete_pending: Option<Vec<(String, String)>>,
     // Cleanup state
     pub cleanup_preview: Option<CleanupPreview>,
+    // Error log state
+    pub error_log: ErrorLogManager,
+    pub error_dates: Vec<String>,
+    pub error_date_selected: usize,
+    pub error_tab: ErrorTab,
+    pub error_selected: usize,
+    pub download_errors: Vec<DownloadErrorEntry>,
+    pub convert_errors: Vec<ConvertErrorEntry>,
+    pub refresh_errors: Vec<RefreshErrorEntry>,
 }
 
 /// Preview of what cleanup will remove
@@ -156,6 +177,9 @@ impl App {
         let db = DownloadDB::new(cache_path);
         let library: Vec<TrackEntry> = db.tracks.iter().cloned().collect();
 
+        let error_log = ErrorLogManager::new("data/errors");
+        let error_dates = error_log.list_dates();
+
         Self {
             running: true,
             view: View::Main,
@@ -200,6 +224,15 @@ impl App {
             convert_all_mode: false,
             convert_batch_delete_pending: None,
             cleanup_preview: None,
+            // Error log
+            error_log,
+            error_dates,
+            error_date_selected: 0,
+            error_tab: ErrorTab::Download,
+            error_selected: 0,
+            download_errors: Vec::new(),
+            convert_errors: Vec::new(),
+            refresh_errors: Vec::new(),
         }
     }
 
@@ -435,6 +468,7 @@ impl App {
             View::ConvertConfirm => View::Main,
             View::ConvertBatchConfirm => View::Main,
             View::CleanupConfirm => View::Main,
+            View::ErrorLog => View::Main,
         };
     }
 
@@ -1130,6 +1164,233 @@ impl App {
         self.cleanup_preview = None;
         self.view = View::Library;
         self.status_message = "Cleanup cancelled.".to_string();
+    }
+
+    // ============ Error Log Methods ============
+
+    /// Show the error log view
+    pub fn show_error_log(&mut self) {
+        // Refresh dates list
+        self.error_dates = self.error_log.list_dates();
+
+        // Load errors for the first date if available
+        if !self.error_dates.is_empty() {
+            self.error_date_selected = 0;
+            self.load_errors_for_current_date();
+        } else {
+            self.download_errors = Vec::new();
+            self.convert_errors = Vec::new();
+            self.refresh_errors = Vec::new();
+        }
+
+        self.error_tab = ErrorTab::Download;
+        self.error_selected = 0;
+        self.view = View::ErrorLog;
+
+        let (d, c, r) = self.error_log.get_total_error_counts();
+        let total = d + c + r;
+        if total == 0 {
+            self.status_message = "No errors logged.".to_string();
+        } else {
+            self.status_message = format!(
+                "Error Log: {} download, {} convert, {} refresh errors",
+                d, c, r
+            );
+        }
+    }
+
+    /// Load errors for the currently selected date
+    fn load_errors_for_current_date(&mut self) {
+        if self.error_dates.is_empty() {
+            return;
+        }
+        let date = &self.error_dates[self.error_date_selected];
+        self.download_errors = self.error_log.get_download_errors_for_date(date);
+        self.convert_errors = self.error_log.get_convert_errors_for_date(date);
+        self.refresh_errors = self.error_log.get_refresh_errors_for_date(date);
+        self.error_selected = 0;
+    }
+
+    /// Get current error list length based on selected tab
+    pub fn current_error_count(&self) -> usize {
+        match self.error_tab {
+            ErrorTab::Download => self.download_errors.len(),
+            ErrorTab::Convert => self.convert_errors.len(),
+            ErrorTab::Refresh => self.refresh_errors.len(),
+        }
+    }
+
+    /// Navigate to next date
+    pub fn error_date_next(&mut self) {
+        if !self.error_dates.is_empty() {
+            self.error_date_selected = (self.error_date_selected + 1) % self.error_dates.len();
+            self.load_errors_for_current_date();
+        }
+    }
+
+    /// Navigate to previous date
+    pub fn error_date_prev(&mut self) {
+        if !self.error_dates.is_empty() {
+            if self.error_date_selected == 0 {
+                self.error_date_selected = self.error_dates.len() - 1;
+            } else {
+                self.error_date_selected -= 1;
+            }
+            self.load_errors_for_current_date();
+        }
+    }
+
+    /// Switch to next error tab
+    pub fn error_tab_next(&mut self) {
+        self.error_tab = match self.error_tab {
+            ErrorTab::Download => ErrorTab::Convert,
+            ErrorTab::Convert => ErrorTab::Refresh,
+            ErrorTab::Refresh => ErrorTab::Download,
+        };
+        self.error_selected = 0;
+    }
+
+    /// Switch to previous error tab
+    pub fn error_tab_prev(&mut self) {
+        self.error_tab = match self.error_tab {
+            ErrorTab::Download => ErrorTab::Refresh,
+            ErrorTab::Convert => ErrorTab::Download,
+            ErrorTab::Refresh => ErrorTab::Convert,
+        };
+        self.error_selected = 0;
+    }
+
+    /// Navigate error list up
+    pub fn error_up(&mut self) {
+        let count = self.current_error_count();
+        if count > 0 && self.error_selected > 0 {
+            self.error_selected -= 1;
+        }
+    }
+
+    /// Navigate error list down
+    pub fn error_down(&mut self) {
+        let count = self.current_error_count();
+        if count > 0 && self.error_selected < count - 1 {
+            self.error_selected += 1;
+        }
+    }
+
+    /// Delete selected error from log
+    pub fn delete_selected_error(&mut self) {
+        if self.error_dates.is_empty() {
+            return;
+        }
+        let date = self.error_dates[self.error_date_selected].clone();
+
+        let removed = match self.error_tab {
+            ErrorTab::Download => {
+                if self.error_selected < self.download_errors.len() {
+                    let id = self.download_errors[self.error_selected].id.clone();
+                    self.error_log.remove_download_error(&date, &id)
+                } else {
+                    false
+                }
+            }
+            ErrorTab::Convert => {
+                if self.error_selected < self.convert_errors.len() {
+                    let id = self.convert_errors[self.error_selected].id.clone();
+                    self.error_log.remove_convert_error(&date, &id)
+                } else {
+                    false
+                }
+            }
+            ErrorTab::Refresh => {
+                if self.error_selected < self.refresh_errors.len() {
+                    let id = self.refresh_errors[self.error_selected].id.clone();
+                    self.error_log.remove_refresh_error(&date, &id)
+                } else {
+                    false
+                }
+            }
+        };
+
+        if removed {
+            // Refresh the view
+            self.error_dates = self.error_log.list_dates();
+            if self.error_date_selected >= self.error_dates.len() && !self.error_dates.is_empty() {
+                self.error_date_selected = self.error_dates.len() - 1;
+            }
+            self.load_errors_for_current_date();
+            if self.error_selected >= self.current_error_count() && self.current_error_count() > 0
+            {
+                self.error_selected = self.current_error_count() - 1;
+            }
+            self.status_message = "Error deleted.".to_string();
+        }
+    }
+
+    /// Clear all errors for current date
+    pub fn clear_current_date_errors(&mut self) {
+        if self.error_dates.is_empty() {
+            return;
+        }
+        let date = self.error_dates[self.error_date_selected].clone();
+        self.error_log.clear_date(&date);
+
+        // Refresh
+        self.error_dates = self.error_log.list_dates();
+        self.error_date_selected = 0;
+        self.load_errors_for_current_date();
+        self.status_message = format!("Cleared all errors from {}.", date);
+    }
+
+    /// Get the selected error's ID and date for retry
+    pub fn get_selected_error_info(&self) -> Option<(String, String, ErrorTab)> {
+        if self.error_dates.is_empty() {
+            return None;
+        }
+        let date = self.error_dates[self.error_date_selected].clone();
+
+        match self.error_tab {
+            ErrorTab::Download => {
+                if self.error_selected < self.download_errors.len() {
+                    Some((
+                        self.download_errors[self.error_selected].id.clone(),
+                        date,
+                        ErrorTab::Download,
+                    ))
+                } else {
+                    None
+                }
+            }
+            ErrorTab::Convert => {
+                if self.error_selected < self.convert_errors.len() {
+                    Some((
+                        self.convert_errors[self.error_selected].id.clone(),
+                        date,
+                        ErrorTab::Convert,
+                    ))
+                } else {
+                    None
+                }
+            }
+            ErrorTab::Refresh => {
+                if self.error_selected < self.refresh_errors.len() {
+                    Some((
+                        self.refresh_errors[self.error_selected].id.clone(),
+                        date,
+                        ErrorTab::Refresh,
+                    ))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Refresh error log data
+    pub fn refresh_error_logs(&mut self) {
+        self.error_dates = self.error_log.list_dates();
+        if self.error_date_selected >= self.error_dates.len() {
+            self.error_date_selected = 0;
+        }
+        self.load_errors_for_current_date();
     }
 }
 

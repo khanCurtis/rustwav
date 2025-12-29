@@ -92,5 +92,31 @@ pub enum Commands {
         #[arg(short, long, default_value_t = false)]
         verbose: bool,
     },
+    /// Retry failed operations from error logs
+    Retry {
+        /// Type of errors to retry: download, convert, refresh, all
+        #[arg(short = 't', long, default_value = "all")]
+        error_type: String,
+
+        /// Retry a specific error by ID
+        #[arg(short, long)]
+        id: Option<String>,
+
+        /// Filter/retry errors from specific date (YYYY-MM-DD)
+        #[arg(short, long)]
+        date: Option<String>,
+
+        /// List errors without retrying
+        #[arg(short, long, default_value_t = false)]
+        list: bool,
+
+        /// Clear errors of specified type
+        #[arg(long, default_value_t = false)]
+        clear: bool,
+
+        /// Clear all errors from a specific date
+        #[arg(long)]
+        clear_date: Option<String>,
+    },
 }
 

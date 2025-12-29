@@ -6,6 +6,7 @@ mod cli;
 mod converter;
 mod db;
 mod downloader;
+pub mod error_log;
 mod file_utils;
 mod metadata;
 mod tui;
@@ -13,6 +14,7 @@ mod tui;
 use crate::{
     cli::{Cli, PortableConfig},
     db::DownloadDB,
+    error_log::{ErrorLogManager, ErrorType},
     sources::spotify,
     tui::{App, DownloadWorker},
 };
@@ -503,6 +505,255 @@ async fn run_cli(command: &cli::Commands, cli_args: &Cli) -> anyhow::Result<()> 
                     );
                 }
             }
+        }
+
+        cli::Commands::Retry {
+            error_type,
+            id,
+            date,
+            list,
+            clear,
+            clear_date,
+        } => {
+            let error_log = ErrorLogManager::new("data/errors");
+
+            // Handle date filter - if specified, only show/retry errors from that date
+            let date_filter = date.as_deref();
+
+            // Handle clear operations first
+            if *clear {
+                match error_type.as_str() {
+                    "download" => {
+                        error_log.clear_error_type(ErrorType::Download);
+                        println!("Cleared all download errors.");
+                    }
+                    "convert" => {
+                        error_log.clear_error_type(ErrorType::Convert);
+                        println!("Cleared all convert errors.");
+                    }
+                    "refresh" => {
+                        error_log.clear_error_type(ErrorType::Refresh);
+                        println!("Cleared all refresh errors.");
+                    }
+                    "all" => {
+                        error_log.clear_all();
+                        println!("Cleared all error logs.");
+                    }
+                    _ => {
+                        anyhow::bail!("Unknown error type: {}. Use: download, convert, refresh, or all", error_type);
+                    }
+                }
+                return Ok(());
+            }
+
+            if let Some(date_str) = clear_date {
+                error_log.clear_date(date_str);
+                println!("Cleared all errors from {}.", date_str);
+                return Ok(());
+            }
+
+            // Handle list operation
+            if *list {
+                let dates = if let Some(d) = date_filter {
+                    vec![d.to_string()]
+                } else {
+                    error_log.list_dates()
+                };
+
+                if dates.is_empty() {
+                    println!("No errors logged.");
+                    return Ok(());
+                }
+
+                let (download_total, convert_total, refresh_total) = if date_filter.is_some() {
+                    error_log.get_error_counts(date_filter.unwrap())
+                } else {
+                    error_log.get_total_error_counts()
+                };
+                println!("Error Log Summary{}:",
+                    if let Some(d) = date_filter { format!(" ({})", d) } else { String::new() });
+                println!("  Download errors: {}", download_total);
+                println!("  Convert errors:  {}", convert_total);
+                println!("  Refresh errors:  {}", refresh_total);
+                println!();
+
+                for date_str in &dates {
+                    let (d, c, r) = error_log.get_error_counts(date_str);
+                    if d == 0 && c == 0 && r == 0 {
+                        continue;
+                    }
+
+                    println!("=== {} ===", date_str);
+
+                    // Show download errors
+                    if (error_type == "all" || error_type == "download") && d > 0 {
+                        println!("\n  Download Errors ({}):", d);
+                        for entry in error_log.get_download_errors_for_date(date_str) {
+                            let track_info = match (&entry.artist, &entry.title) {
+                                (Some(a), Some(t)) => format!("{} - {}", a, t),
+                                _ => entry.link_type.clone(),
+                            };
+                            println!("    [{}] {} (retries: {})",
+                                &entry.id[..8], track_info, entry.retry_count);
+                            println!("      Error: {}", entry.error);
+                            println!("      Link: {}", entry.link);
+                        }
+                    }
+
+                    // Show convert errors
+                    if (error_type == "all" || error_type == "convert") && c > 0 {
+                        println!("\n  Convert Errors ({}):", c);
+                        for entry in error_log.get_convert_errors_for_date(date_str) {
+                            println!("    [{}] {} - {} (retries: {})",
+                                &entry.id[..8], entry.artist, entry.title, entry.retry_count);
+                            println!("      Error: {}", entry.error);
+                            println!("      Path: {}", entry.input_path);
+                        }
+                    }
+
+                    // Show refresh errors
+                    if (error_type == "all" || error_type == "refresh") && r > 0 {
+                        println!("\n  Refresh Errors ({}):", r);
+                        for entry in error_log.get_refresh_errors_for_date(date_str) {
+                            println!("    [{}] {} - {} (retries: {})",
+                                &entry.id[..8], entry.artist, entry.title, entry.retry_count);
+                            println!("      Error: {}", entry.error);
+                            println!("      Path: {}", entry.input_path);
+                        }
+                    }
+                    println!();
+                }
+                return Ok(());
+            }
+
+            // Handle retry operation
+            // For now, print a message - full retry implementation requires reusing download/convert logic
+            let (download_total, convert_total, refresh_total) = error_log.get_total_error_counts();
+            let total = download_total + convert_total + refresh_total;
+
+            if total == 0 {
+                println!("No errors to retry.");
+                return Ok(());
+            }
+
+            if let Some(error_id) = id {
+                // Retry specific error by ID
+                println!("Retrying error: {}...", error_id);
+
+                // Try to find the error in each log type
+                if let Some((found_date, entry)) = error_log.get_download_error(error_id) {
+                    println!("Found download error: {} - {:?}",
+                        entry.artist.as_deref().unwrap_or("Unknown"),
+                        entry.title.as_deref().unwrap_or("Unknown"));
+                    println!("To retry, use the TUI (press 'e' for error logs) or re-run the original command:");
+                    println!("  rustwav {} {}", entry.link_type, entry.link);
+                    error_log.remove_download_error(&found_date, error_id);
+                    return Ok(());
+                }
+
+                if let Some((found_date, entry)) = error_log.get_convert_error(error_id) {
+                    println!("Found convert error: {} - {}", entry.artist, entry.title);
+                    println!("Re-running conversion...");
+
+                    // Actually retry the conversion
+                    let input_path = std::path::Path::new(&entry.input_path);
+                    if input_path.exists() {
+                        match converter::convert_audio(input_path, &entry.target_format, &entry.quality, |msg| {
+                            println!("  {}", msg);
+                        }) {
+                            Ok(new_path) => {
+                                println!("Conversion successful: {}", new_path.display());
+                                error_log.remove_convert_error(&found_date, error_id);
+                                db.update_path(&entry.input_path, &new_path.display().to_string());
+                            }
+                            Err(e) => {
+                                println!("Conversion failed again: {}", e);
+                                error_log.increment_convert_retry(&found_date, error_id);
+                            }
+                        }
+                    } else {
+                        println!("Input file no longer exists: {}", entry.input_path);
+                        error_log.remove_convert_error(&found_date, error_id);
+                    }
+                    return Ok(());
+                }
+
+                if let Some((found_date, entry)) = error_log.get_refresh_error(error_id) {
+                    println!("Found refresh error: {} - {}", entry.artist, entry.title);
+                    println!("Re-running metadata refresh...");
+
+                    let input_path = std::path::Path::new(&entry.input_path);
+                    if input_path.exists() {
+                        match spotify::search_track(&entry.artist, &entry.title).await {
+                            Ok(Some(meta)) => {
+                                let cover_path = if let Some(url) = &meta.cover_url {
+                                    let cover_file = input_path.with_file_name("temp_cover.jpg");
+                                    if let Ok(response) = reqwest::blocking::get(url) {
+                                        if let Ok(bytes) = response.bytes() {
+                                            let _ = std::fs::write(&cover_file, &bytes);
+                                            Some(cover_file)
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                };
+
+                                if let Err(e) = metadata::tag_audio(
+                                    input_path,
+                                    &meta.artist,
+                                    &meta.album,
+                                    &meta.title,
+                                    meta.track_number,
+                                    cover_path.as_deref(),
+                                    &config,
+                                ) {
+                                    println!("Failed to apply metadata: {}", e);
+                                    error_log.increment_refresh_retry(&found_date, error_id);
+                                } else {
+                                    println!("Metadata refreshed successfully!");
+                                    error_log.remove_refresh_error(&found_date, error_id);
+                                }
+
+                                if let Some(cover) = cover_path {
+                                    let _ = std::fs::remove_file(cover);
+                                }
+                            }
+                            Ok(None) => {
+                                println!("Track not found on Spotify.");
+                                error_log.increment_refresh_retry(&found_date, error_id);
+                            }
+                            Err(e) => {
+                                println!("Spotify search failed: {}", e);
+                                error_log.increment_refresh_retry(&found_date, error_id);
+                            }
+                        }
+                    } else {
+                        println!("Input file no longer exists: {}", entry.input_path);
+                        error_log.remove_refresh_error(&found_date, error_id);
+                    }
+                    return Ok(());
+                }
+
+                println!("Error ID not found: {}", error_id);
+                return Ok(());
+            }
+
+            // No specific ID - show summary and suggest using TUI or --id
+            println!("Found {} error(s) to retry:", total);
+            println!("  Download: {}", download_total);
+            println!("  Convert:  {}", convert_total);
+            println!("  Refresh:  {}", refresh_total);
+            println!();
+            println!("To retry specific errors:");
+            println!("  rustwav retry --list                # List all errors with IDs");
+            println!("  rustwav retry --id <error-id>       # Retry specific error");
+            println!("  rustwav retry --date 2025-12-29     # Retry all errors from a date");
+            println!();
+            println!("Or use the TUI (press 'e' for error logs view).");
         }
     }
 

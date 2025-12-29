@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use super::app::{App, CleanupPreview, JobStatus, SettingsField, View, FORMAT_OPTIONS, QUALITY_OPTIONS};
+use super::app::{App, CleanupPreview, ErrorTab, JobStatus, SettingsField, View, FORMAT_OPTIONS, QUALITY_OPTIONS};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -37,7 +37,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     ];
 
     let selected = match app.view {
-        View::Main | View::AddLink | View::LinkSettings | View::GenerateM3U | View::M3UConfirm => 0,
+        View::Main | View::AddLink | View::LinkSettings | View::GenerateM3U | View::M3UConfirm | View::ErrorLog => 0,
         View::Queue => 1,
         View::Library | View::ConvertSettings | View::ConvertConfirm | View::ConvertBatchConfirm | View::CleanupConfirm => 2,
         View::Logs => 3,
@@ -74,6 +74,7 @@ fn draw_main(frame: &mut Frame, app: &App, area: Rect) {
         View::ConvertConfirm => draw_convert_confirm_view(frame, app, area),
         View::ConvertBatchConfirm => draw_convert_batch_confirm_view(frame, app, area),
         View::CleanupConfirm => draw_cleanup_confirm_view(frame, app, area),
+        View::ErrorLog => draw_error_log_view(frame, app, area),
     }
 }
 
@@ -885,6 +886,174 @@ fn draw_cleanup_confirm_view(frame: &mut Frame, app: &App, area: Rect) {
 
         let paragraph = Paragraph::new(text);
         frame.render_widget(paragraph, inner);
+    }
+}
+
+fn draw_error_log_view(frame: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Date tabs
+            Constraint::Length(3), // Error type tabs
+            Constraint::Min(0),    // Error list
+            Constraint::Length(2), // Keybindings
+        ])
+        .split(area);
+
+    // Date tabs
+    let date_titles: Vec<String> = if app.error_dates.is_empty() {
+        vec!["No errors".to_string()]
+    } else {
+        app.error_dates.clone()
+    };
+
+    let date_tabs = Tabs::new(date_titles)
+        .block(Block::default().borders(Borders::ALL).title(" Error Log - Dates "))
+        .select(app.error_date_selected)
+        .style(Style::default().fg(Color::White))
+        .highlight_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+    frame.render_widget(date_tabs, chunks[0]);
+
+    // Error type tabs with counts
+    let (d_count, c_count, r_count) = if app.error_dates.is_empty() {
+        (0, 0, 0)
+    } else {
+        (
+            app.download_errors.len(),
+            app.convert_errors.len(),
+            app.refresh_errors.len(),
+        )
+    };
+
+    let type_titles = vec![
+        format!("Download ({})", d_count),
+        format!("Convert ({})", c_count),
+        format!("Refresh ({})", r_count),
+    ];
+
+    let selected_tab = match app.error_tab {
+        ErrorTab::Download => 0,
+        ErrorTab::Convert => 1,
+        ErrorTab::Refresh => 2,
+    };
+
+    let type_tabs = Tabs::new(type_titles)
+        .block(Block::default().borders(Borders::ALL))
+        .select(selected_tab)
+        .style(Style::default().fg(Color::White))
+        .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+    frame.render_widget(type_tabs, chunks[1]);
+
+    // Error list
+    let items: Vec<ListItem> = match app.error_tab {
+        ErrorTab::Download => app
+            .download_errors
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let track = match (&e.artist, &e.title) {
+                    (Some(a), Some(t)) => format!("{} - {}", a, t),
+                    _ => format!("[{}]", e.link_type),
+                };
+                let style = if i == app.error_selected {
+                    Style::default().fg(Color::Black).bg(Color::Cyan)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(vec![
+                    Line::from(Span::styled(track, style.add_modifier(Modifier::BOLD))),
+                    Line::from(Span::styled(
+                        format!("  Error: {}", truncate_str(&e.error, 60)),
+                        Style::default().fg(Color::Red),
+                    )),
+                    Line::from(Span::styled(
+                        format!("  Retries: {} | ID: {}", e.retry_count, &e.id[..8]),
+                        Style::default().fg(Color::DarkGray),
+                    )),
+                ])
+            })
+            .collect(),
+        ErrorTab::Convert => app
+            .convert_errors
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let style = if i == app.error_selected {
+                    Style::default().fg(Color::Black).bg(Color::Cyan)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(vec![
+                    Line::from(Span::styled(
+                        format!("{} - {}", e.artist, e.title),
+                        style.add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(Span::styled(
+                        format!("  Error: {}", truncate_str(&e.error, 60)),
+                        Style::default().fg(Color::Red),
+                    )),
+                    Line::from(Span::styled(
+                        format!("  Retries: {} | ID: {}", e.retry_count, &e.id[..8]),
+                        Style::default().fg(Color::DarkGray),
+                    )),
+                ])
+            })
+            .collect(),
+        ErrorTab::Refresh => app
+            .refresh_errors
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let style = if i == app.error_selected {
+                    Style::default().fg(Color::Black).bg(Color::Cyan)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(vec![
+                    Line::from(Span::styled(
+                        format!("{} - {}", e.artist, e.title),
+                        style.add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(Span::styled(
+                        format!("  Error: {}", truncate_str(&e.error, 60)),
+                        Style::default().fg(Color::Red),
+                    )),
+                    Line::from(Span::styled(
+                        format!("  Retries: {} | ID: {}", e.retry_count, &e.id[..8]),
+                        Style::default().fg(Color::DarkGray),
+                    )),
+                ])
+            })
+            .collect(),
+    };
+
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(" Errors "));
+    frame.render_widget(list, chunks[2]);
+
+    // Keybindings
+    let keys = Line::from(vec![
+        Span::styled("h/l", Style::default().fg(Color::Yellow)),
+        Span::raw(":Date "),
+        Span::styled("Tab", Style::default().fg(Color::Yellow)),
+        Span::raw(":Type "),
+        Span::styled("j/k", Style::default().fg(Color::Yellow)),
+        Span::raw(":Navigate "),
+        Span::styled("d", Style::default().fg(Color::Yellow)),
+        Span::raw(":Delete "),
+        Span::styled("D", Style::default().fg(Color::Yellow)),
+        Span::raw(":Clear Date "),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::raw(":Back"),
+    ]);
+    let keybindings = Paragraph::new(keys).style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(keybindings, chunks[3]);
+}
+
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len - 3])
     }
 }
 
