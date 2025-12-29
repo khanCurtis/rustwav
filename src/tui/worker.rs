@@ -10,6 +10,13 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
+pub struct ConvertTrackInfo {
+    pub input_path: String,
+    pub artist: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone)]
 pub enum DownloadRequest {
     Album {
         id: usize,
@@ -33,6 +40,13 @@ pub enum DownloadRequest {
         refresh_metadata: bool,
         artist: String,
         title: String,
+    },
+    ConvertBatch {
+        id: usize,
+        tracks: Vec<ConvertTrackInfo>,
+        target_format: String,
+        quality: String,
+        refresh_metadata: bool,
     },
 }
 
@@ -113,11 +127,21 @@ pub enum DownloadEvent {
         path: String,
         error: String,
     },
-    /// Ask user to confirm deletion of original
+    /// Ask user to confirm deletion of original (single file)
     ConvertDeleteConfirm {
         id: usize,
         old_path: String,
         new_path: String,
+    },
+    /// Ask user to confirm deletion of all originals (batch conversion)
+    ConvertBatchDeleteConfirm {
+        converted_files: Vec<(String, String)>, // Vec of (old_path, new_path)
+    },
+    /// Batch conversion complete
+    ConvertBatchComplete {
+        id: usize,
+        total: usize,
+        successful: usize,
     },
 }
 
@@ -192,6 +216,22 @@ impl DownloadWorker {
                         refresh_metadata,
                         &artist,
                         &title,
+                    )
+                    .await;
+                }
+                DownloadRequest::ConvertBatch {
+                    id,
+                    tracks,
+                    target_format,
+                    quality,
+                    refresh_metadata,
+                } => {
+                    self.process_convert_batch(
+                        id,
+                        tracks,
+                        &target_format,
+                        &quality,
+                        refresh_metadata,
                     )
                     .await;
                 }
@@ -872,6 +912,188 @@ impl DownloadWorker {
                     })
                     .await;
             }
+        }
+    }
+
+    async fn process_convert_batch(
+        &mut self,
+        id: usize,
+        tracks: Vec<ConvertTrackInfo>,
+        target_format: &str,
+        quality: &str,
+        refresh_metadata: bool,
+    ) {
+        let total = tracks.len();
+        let mut successful = 0;
+        let mut converted_files: Vec<(String, String)> = Vec::new();
+
+        self.send_log(
+            id,
+            format!("Starting batch conversion of {} tracks to {}", total, target_format),
+        )
+        .await;
+
+        for (i, track) in tracks.iter().enumerate() {
+            let input = std::path::Path::new(&track.input_path);
+
+            self.send_log(
+                id,
+                format!(
+                    "[{}/{}] Converting: {} - {}",
+                    i + 1,
+                    total,
+                    track.artist,
+                    track.title
+                ),
+            )
+            .await;
+
+            let _ = self
+                .tx
+                .send(DownloadEvent::ConvertStarted {
+                    id,
+                    path: track.input_path.clone(),
+                    target_format: target_format.to_string(),
+                })
+                .await;
+
+            // Perform conversion
+            let input_clone = input.to_path_buf();
+            let format_clone = target_format.to_string();
+            let quality_clone = quality.to_string();
+            let tx_clone = self.tx.clone();
+
+            let result = tokio::task::spawn_blocking(move || {
+                converter::convert_audio(&input_clone, &format_clone, &quality_clone, move |line| {
+                    let tx = tx_clone.clone();
+                    let line = line.to_string();
+                    let _ = tx.blocking_send(DownloadEvent::LogLine { id, line });
+                })
+            })
+            .await;
+
+            match result {
+                Ok(Ok(new_path)) => {
+                    let new_path_str = new_path.display().to_string();
+
+                    // Refresh metadata if requested
+                    if refresh_metadata {
+                        match spotify::search_track(&track.artist, &track.title).await {
+                            Ok(Some(meta)) => {
+                                let cover_path = if let Some(url) = &meta.cover_url {
+                                    let cover_file = new_path.with_file_name("temp_cover.jpg");
+                                    if let Ok(response) = reqwest::get(url).await {
+                                        if let Ok(bytes) = response.bytes().await {
+                                            let _ = std::fs::write(&cover_file, &bytes);
+                                            Some(cover_file)
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                };
+
+                                let config = PortableConfig {
+                                    enabled: false,
+                                    max_cover_dim: 500,
+                                    max_cover_bytes: 300 * 1024,
+                                    max_filename_len: 100,
+                                };
+
+                                let _ = metadata::tag_audio(
+                                    &new_path,
+                                    &meta.artist,
+                                    &meta.album,
+                                    &meta.title,
+                                    meta.track_number,
+                                    cover_path.as_deref(),
+                                    &config,
+                                );
+
+                                if let Some(cover) = cover_path {
+                                    let _ = std::fs::remove_file(cover);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Update database with new path
+                    self.db.update_path(&track.input_path, &new_path_str);
+
+                    converted_files.push((track.input_path.clone(), new_path_str.clone()));
+                    successful += 1;
+
+                    let _ = self
+                        .tx
+                        .send(DownloadEvent::ConvertComplete {
+                            id,
+                            old_path: track.input_path.clone(),
+                            new_path: new_path_str,
+                        })
+                        .await;
+                }
+                Ok(Err(e)) => {
+                    self.send_log(
+                        id,
+                        format!("Failed to convert {} - {}: {}", track.artist, track.title, e),
+                    )
+                    .await;
+                    let _ = self
+                        .tx
+                        .send(DownloadEvent::ConvertFailed {
+                            id,
+                            path: track.input_path.clone(),
+                            error: e.to_string(),
+                        })
+                        .await;
+                }
+                Err(e) => {
+                    self.send_log(
+                        id,
+                        format!("Task failed for {} - {}: {}", track.artist, track.title, e),
+                    )
+                    .await;
+                    let _ = self
+                        .tx
+                        .send(DownloadEvent::ConvertFailed {
+                            id,
+                            path: track.input_path.clone(),
+                            error: e.to_string(),
+                        })
+                        .await;
+                }
+            }
+        }
+
+        self.send_log(
+            id,
+            format!(
+                "Batch conversion complete: {}/{} successful",
+                successful, total
+            ),
+        )
+        .await;
+
+        // Send batch complete event
+        let _ = self
+            .tx
+            .send(DownloadEvent::ConvertBatchComplete {
+                id,
+                total,
+                successful,
+            })
+            .await;
+
+        // If any files were successfully converted, ask about deletion
+        if !converted_files.is_empty() {
+            let _ = self
+                .tx
+                .send(DownloadEvent::ConvertBatchDeleteConfirm { converted_files })
+                .await;
         }
     }
 }

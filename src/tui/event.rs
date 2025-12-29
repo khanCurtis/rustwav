@@ -15,6 +15,7 @@ pub fn handle_events(app: &mut App) -> anyhow::Result<()> {
                     View::M3UConfirm => handle_m3u_confirm_mode(app, key.code),
                     View::ConvertSettings => handle_convert_settings_mode(app, key.code),
                     View::ConvertConfirm => handle_convert_confirm_mode(app, key.code),
+                    View::ConvertBatchConfirm => handle_convert_batch_confirm_mode(app, key.code),
                     _ => handle_normal_mode(app, key.code, key.modifiers),
                 }
             }
@@ -132,6 +133,14 @@ fn handle_convert_confirm_mode(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Char('y') => app.confirm_delete_original(),
         KeyCode::Char('n') | KeyCode::Esc => app.cancel_delete_original(),
+        _ => {}
+    }
+}
+
+fn handle_convert_batch_confirm_mode(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Char('y') => app.confirm_batch_delete_originals(),
+        KeyCode::Char('n') | KeyCode::Esc => app.cancel_batch_delete_originals(),
         _ => {}
     }
 }

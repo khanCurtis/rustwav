@@ -2,12 +2,77 @@ use anyhow::Context;
 use id3::{frame::Picture, Tag, TagLike, Version};
 use image::codecs::jpeg::JpegEncoder;
 use image::{GenericImageView, ImageEncoder, ImageReader};
+use metaflac::block::PictureType;
 use std::path::Path;
 
 use crate::cli::PortableConfig;
 
-/// Tag an audio file with ID3v2.3, optionally embed cover art from `cover_path` if present.
-/// Automatically detects WAV files and uses the appropriate writing method.
+/// Sanitize a string for Vorbis comments: UTF-8 only, no null bytes
+fn sanitize_vorbis_string(s: &str) -> String {
+    s.chars().filter(|&c| c != '\0').collect()
+}
+
+/// Tag a FLAC file with Vorbis comments.
+/// Field names: ARTIST, ALBUM, TITLE, TRACKNUMBER (uppercase, UTF-8, no nulls)
+fn tag_flac(
+    file_path: &Path,
+    artist: &str,
+    album: &str,
+    title: &str,
+    track: u32,
+    cover_path: Option<&Path>,
+    config: &PortableConfig,
+) -> anyhow::Result<()> {
+    let mut flac_tag = metaflac::Tag::read_from_path(file_path)
+        .context("reading FLAC file")?;
+
+    // Remove existing Vorbis comments for these fields to avoid duplicates
+    flac_tag.remove_vorbis("ARTIST");
+    flac_tag.remove_vorbis("ALBUM");
+    flac_tag.remove_vorbis("TITLE");
+    flac_tag.remove_vorbis("TRACKNUMBER");
+
+    // Set Vorbis comments with sanitized UTF-8 strings (no null bytes)
+    flac_tag.set_vorbis("ARTIST", vec![sanitize_vorbis_string(artist)]);
+    flac_tag.set_vorbis("ALBUM", vec![sanitize_vorbis_string(album)]);
+    flac_tag.set_vorbis("TITLE", vec![sanitize_vorbis_string(title)]);
+    flac_tag.set_vorbis("TRACKNUMBER", vec![track.to_string()]);
+
+    // Add cover art if provided
+    if let Some(cover) = cover_path {
+        if cover.exists() {
+            if let Ok(data) = resize_and_read_image(cover, config) {
+                // Remove existing pictures first
+                flac_tag.remove_picture_type(PictureType::CoverFront);
+
+                let picture = metaflac::block::Picture {
+                    picture_type: PictureType::CoverFront,
+                    mime_type: "image/jpeg".to_string(),
+                    description: String::new(),
+                    width: 0,
+                    height: 0,
+                    depth: 0,
+                    num_colors: 0,
+                    data,
+                };
+                flac_tag.add_picture(
+                    picture.mime_type,
+                    picture.picture_type,
+                    picture.data,
+                );
+            }
+        }
+    }
+
+    flac_tag.write_to_path(file_path)
+        .context("writing FLAC Vorbis comments")?;
+
+    Ok(())
+}
+
+/// Tag an audio file with appropriate metadata format.
+/// - FLAC files: Vorbis comments (ARTIST, ALBUM, TITLE, TRACKNUMBER)
+/// - WAV/AIFF/MP3/etc: ID3v2.3 tags
 pub fn tag_audio(
     file_path: &Path,
     artist: &str,
@@ -17,6 +82,17 @@ pub fn tag_audio(
     cover_path: Option<&Path>,
     config: &PortableConfig,
 ) -> anyhow::Result<()> {
+    let extension = file_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+
+    // Use Vorbis comments for FLAC files
+    if extension.as_deref() == Some("flac") {
+        return tag_flac(file_path, artist, album, title, track, cover_path, config);
+    }
+
+    // Use ID3 tags for other formats
     let mut tag = Tag::new();
     tag.set_artist(artist);
     tag.set_album(album);
@@ -36,12 +112,6 @@ pub fn tag_audio(
             }
         }
     }
-
-    // Use format-specific writing method based on file extension
-    let extension = file_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase());
 
     #[allow(deprecated)]
     match extension.as_deref() {

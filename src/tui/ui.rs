@@ -39,7 +39,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let selected = match app.view {
         View::Main | View::AddLink | View::LinkSettings | View::GenerateM3U | View::M3UConfirm => 0,
         View::Queue => 1,
-        View::Library | View::ConvertSettings | View::ConvertConfirm => 2,
+        View::Library | View::ConvertSettings | View::ConvertConfirm | View::ConvertBatchConfirm => 2,
         View::Logs => 3,
     };
 
@@ -72,6 +72,7 @@ fn draw_main(frame: &mut Frame, app: &App, area: Rect) {
         View::M3UConfirm => draw_m3u_confirm_view(frame, app, area),
         View::ConvertSettings => draw_convert_settings_view(frame, app, area),
         View::ConvertConfirm => draw_convert_confirm_view(frame, app, area),
+        View::ConvertBatchConfirm => draw_convert_batch_confirm_view(frame, app, area),
     }
 }
 
@@ -747,6 +748,55 @@ fn draw_convert_confirm_view(frame: &mut Frame, app: &App, area: Rect) {
                 Span::raw("  Press "),
                 Span::styled("n", Style::default().fg(Color::Red)),
                 Span::raw(" to keep both files"),
+            ]),
+        ];
+
+        let paragraph = Paragraph::new(text);
+        frame.render_widget(paragraph, inner);
+    }
+}
+
+fn draw_convert_batch_confirm_view(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Delete Original Files? ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if let Some(ref files) = app.convert_batch_delete_pending {
+        let count = files.len();
+        let text = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Batch conversion completed!",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("  Successfully converted "),
+                Span::styled(
+                    format!("{}", count),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" file(s)."),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Do you want to delete ALL original files?",
+                Style::default().fg(Color::White),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("  Press "),
+                Span::styled("y", Style::default().fg(Color::Green)),
+                Span::raw(" to delete all originals"),
+            ]),
+            Line::from(vec![
+                Span::raw("  Press "),
+                Span::styled("n", Style::default().fg(Color::Red)),
+                Span::raw(" to keep all files"),
             ]),
         ];
 

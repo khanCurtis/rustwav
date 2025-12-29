@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use tokio::sync::{mpsc, watch};
 
-use super::worker::{DownloadEvent, DownloadRequest};
+use super::worker::{ConvertTrackInfo, DownloadEvent, DownloadRequest};
 
 // Format and quality options
 pub const FORMAT_OPTIONS: [&str; 4] = ["mp3", "flac", "wav", "aac"];
@@ -23,6 +23,7 @@ pub enum View {
     M3UConfirm,
     ConvertSettings,
     ConvertConfirm,
+    ConvertBatchConfirm,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -100,6 +101,7 @@ pub struct App {
     pub convert_refresh_metadata: bool,
     pub convert_delete_pending: Option<ConvertDeletePending>,
     pub convert_all_mode: bool,
+    pub convert_batch_delete_pending: Option<Vec<(String, String)>>,
 }
 
 /// Pending M3U data waiting for user confirmation
@@ -186,6 +188,7 @@ impl App {
             convert_refresh_metadata: true,
             convert_delete_pending: None,
             convert_all_mode: false,
+            convert_batch_delete_pending: None,
         }
     }
 
@@ -344,6 +347,25 @@ impl App {
                     self.status_message =
                         "Delete original file? Press 'y' to delete, 'n' to keep.".to_string();
                 }
+                DownloadEvent::ConvertBatchComplete { total, successful, .. } => {
+                    self.add_log(format!(
+                        "Batch conversion complete: {}/{} successful",
+                        successful, total
+                    ));
+                    self.status_message = format!(
+                        "Batch conversion complete: {}/{} tracks converted",
+                        successful, total
+                    );
+                }
+                DownloadEvent::ConvertBatchDeleteConfirm { converted_files } => {
+                    let count = converted_files.len();
+                    self.convert_batch_delete_pending = Some(converted_files);
+                    self.view = View::ConvertBatchConfirm;
+                    self.status_message = format!(
+                        "Delete {} original file(s)? Press 'y' to delete all, 'n' to keep all.",
+                        count
+                    );
+                }
             }
         }
     }
@@ -375,6 +397,7 @@ impl App {
             View::M3UConfirm => View::Main,
             View::ConvertSettings => View::Main,
             View::ConvertConfirm => View::Main,
+            View::ConvertBatchConfirm => View::Main,
         };
     }
 
@@ -801,29 +824,33 @@ impl App {
         let refresh_metadata = self.convert_refresh_metadata;
 
         if self.convert_all_mode {
-            // Queue conversion for all tracks in the library
-            let tracks: Vec<_> = self.library.iter().cloned().collect();
+            // Queue batch conversion for all tracks in the library
+            let tracks: Vec<ConvertTrackInfo> = self
+                .library
+                .iter()
+                .map(|t| ConvertTrackInfo {
+                    input_path: t.path.clone(),
+                    artist: t.artist.clone(),
+                    title: t.title.clone(),
+                })
+                .collect();
             let track_count = tracks.len();
 
-            for track in tracks {
-                self.next_id += 1;
-                let id = self.next_id;
+            self.next_id += 1;
+            let id = self.next_id;
 
-                let request = DownloadRequest::Convert {
-                    id,
-                    input_path: track.path,
-                    target_format: format.clone(),
-                    quality: quality.clone(),
-                    refresh_metadata,
-                    artist: track.artist,
-                    title: track.title,
-                };
+            let request = DownloadRequest::ConvertBatch {
+                id,
+                tracks,
+                target_format: format.clone(),
+                quality: quality.clone(),
+                refresh_metadata,
+            };
 
-                let tx = self.download_tx.clone();
-                tokio::spawn(async move {
-                    let _ = tx.send(request).await;
-                });
-            }
+            let tx = self.download_tx.clone();
+            tokio::spawn(async move {
+                let _ = tx.send(request).await;
+            });
 
             self.convert_all_mode = false;
             self.status_message = format!(
@@ -908,6 +935,42 @@ impl App {
         self.convert_delete_pending = None;
         self.view = View::Library;
         self.status_message = "Original file kept".to_string();
+    }
+
+    pub fn confirm_batch_delete_originals(&mut self) {
+        if let Some(files) = self.convert_batch_delete_pending.take() {
+            let mut deleted = 0;
+            let mut failed = 0;
+            for (old_path, _) in &files {
+                if let Err(_) = std::fs::remove_file(old_path) {
+                    failed += 1;
+                } else {
+                    deleted += 1;
+                }
+            }
+            if failed > 0 {
+                self.status_message = format!(
+                    "Deleted {} files, {} failed to delete",
+                    deleted, failed
+                );
+            } else {
+                self.status_message = format!("Deleted {} original files", deleted);
+            }
+        }
+        self.view = View::Library;
+        self.refresh_library();
+    }
+
+    pub fn cancel_batch_delete_originals(&mut self) {
+        let count = self
+            .convert_batch_delete_pending
+            .as_ref()
+            .map(|f| f.len())
+            .unwrap_or(0);
+        self.convert_batch_delete_pending = None;
+        self.view = View::Library;
+        self.status_message = format!("Kept {} original files", count);
+        self.refresh_library();
     }
 }
 
