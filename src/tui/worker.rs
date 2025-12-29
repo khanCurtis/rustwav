@@ -370,6 +370,9 @@ impl DownloadWorker {
         let total_tracks = album.tracks.items.len();
         let display_name = format!("{} - {}", main_artist, album_name);
 
+        // Fetch genre for the album
+        let album_genre = spotify::fetch_album_genres(&album).await;
+
         // Update queue with album name while still processing
         let _ = self
             .tx
@@ -501,6 +504,7 @@ impl DownloadWorker {
                         &album_name,
                         &track_title,
                         (i + 1) as u32,
+                        album_genre.as_deref(),
                         cover_path.as_deref(),
                         &config,
                     ) {
@@ -801,12 +805,14 @@ impl DownloadWorker {
             .await
             {
                 Ok(Ok(_)) => {
+                    // For playlists, we don't have album-level genre info
                     if let Err(e) = metadata::tag_audio(
                         &file_path,
                         &track_artist,
                         &album_name,
                         &track_title,
                         track.track_number,
+                        None, // genre - can be added via retag command
                         None,
                         &config,
                     ) {
@@ -993,6 +999,7 @@ impl DownloadWorker {
                                 &meta.album,
                                 &meta.title,
                                 meta.track_number,
+                                meta.genre.as_deref(),
                                 cover_path.as_deref(),
                                 &config,
                             ) {
@@ -1187,6 +1194,7 @@ impl DownloadWorker {
                                     &meta.album,
                                     &meta.title,
                                     meta.track_number,
+                                    meta.genre.as_deref(),
                                     cover_path.as_deref(),
                                     &config,
                                 );
@@ -1354,6 +1362,7 @@ impl DownloadWorker {
                     &meta.album,
                     &meta.title,
                     meta.track_number,
+                    meta.genre.as_deref(),
                     cover_path.as_deref(),
                     &config,
                 ) {
@@ -1507,6 +1516,7 @@ impl DownloadWorker {
                         &meta.album,
                         &meta.title,
                         meta.track_number,
+                        meta.genre.as_deref(),
                         cover_path.as_deref(),
                         &config,
                     )

@@ -7,19 +7,140 @@ use std::path::Path;
 
 use crate::cli::PortableConfig;
 
+/// Struct holding all tag information from an audio file
+#[derive(Debug, Clone, Default)]
+pub struct AudioTags {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub genre: Option<String>,
+    pub track: Option<u32>,
+    pub year: Option<i32>,
+    pub has_cover: bool,
+}
+
+impl std::fmt::Display for AudioTags {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "  Title:  {}", self.title.as_deref().unwrap_or("(none)"))?;
+        writeln!(f, "  Artist: {}", self.artist.as_deref().unwrap_or("(none)"))?;
+        writeln!(f, "  Album:  {}", self.album.as_deref().unwrap_or("(none)"))?;
+        writeln!(f, "  Genre:  {}", self.genre.as_deref().unwrap_or("(none)"))?;
+        writeln!(f, "  Track:  {}", self.track.map(|t| t.to_string()).unwrap_or_else(|| "(none)".to_string()))?;
+        writeln!(f, "  Year:   {}", self.year.map(|y| y.to_string()).unwrap_or_else(|| "(none)".to_string()))?;
+        writeln!(f, "  Cover:  {}", if self.has_cover { "Yes" } else { "No" })?;
+        Ok(())
+    }
+}
+
+/// Read tags from an audio file and return them as AudioTags
+pub fn read_tags(file_path: &Path) -> anyhow::Result<AudioTags> {
+    let extension = file_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+
+    match extension.as_deref() {
+        Some("flac") => read_flac_tags(file_path),
+        Some("mp3") => read_id3_tags(file_path),
+        Some("wav") => read_wav_tags(file_path),
+        Some("aiff" | "aif") => read_aiff_tags(file_path),
+        _ => anyhow::bail!("Unsupported format for tag reading: {:?}", extension),
+    }
+}
+
+fn read_flac_tags(file_path: &Path) -> anyhow::Result<AudioTags> {
+    let tag = metaflac::Tag::read_from_path(file_path)
+        .context("reading FLAC file")?;
+
+    let vorbis = tag.vorbis_comments();
+
+    let get_first = |key: &str| -> Option<String> {
+        vorbis.and_then(|v| v.get(key).and_then(|vals| vals.first().cloned()))
+    };
+
+    let track = get_first("TRACKNUMBER")
+        .and_then(|s| s.parse::<u32>().ok());
+
+    let year = get_first("DATE")
+        .or_else(|| get_first("YEAR"))
+        .and_then(|s| s.chars().take(4).collect::<String>().parse::<i32>().ok());
+
+    let has_cover = tag.pictures().next().is_some();
+
+    Ok(AudioTags {
+        title: get_first("TITLE"),
+        artist: get_first("ARTIST"),
+        album: get_first("ALBUM"),
+        genre: get_first("GENRE"),
+        track,
+        year,
+        has_cover,
+    })
+}
+
+fn read_id3_tags(file_path: &Path) -> anyhow::Result<AudioTags> {
+    let tag = Tag::read_from_path(file_path)
+        .context("reading ID3 tags")?;
+
+    let has_cover = tag.pictures().next().is_some();
+
+    Ok(AudioTags {
+        title: tag.title().map(|s| s.to_string()),
+        artist: tag.artist().map(|s| s.to_string()),
+        album: tag.album().map(|s| s.to_string()),
+        genre: tag.genre_parsed().map(|g| g.to_string()),
+        track: tag.track(),
+        year: tag.year(),
+        has_cover,
+    })
+}
+
+#[allow(deprecated)]
+fn read_wav_tags(file_path: &Path) -> anyhow::Result<AudioTags> {
+    match Tag::read_from_wav_path(file_path) {
+        Ok(tag) => Ok(AudioTags {
+            title: tag.title().map(|s| s.to_string()),
+            artist: tag.artist().map(|s| s.to_string()),
+            album: tag.album().map(|s| s.to_string()),
+            genre: tag.genre_parsed().map(|g| g.to_string()),
+            track: tag.track(),
+            year: tag.year(),
+            has_cover: tag.pictures().next().is_some(),
+        }),
+        Err(_) => Ok(AudioTags::default()), // WAV might have no tags
+    }
+}
+
+#[allow(deprecated)]
+fn read_aiff_tags(file_path: &Path) -> anyhow::Result<AudioTags> {
+    match Tag::read_from_aiff_path(file_path) {
+        Ok(tag) => Ok(AudioTags {
+            title: tag.title().map(|s| s.to_string()),
+            artist: tag.artist().map(|s| s.to_string()),
+            album: tag.album().map(|s| s.to_string()),
+            genre: tag.genre_parsed().map(|g| g.to_string()),
+            track: tag.track(),
+            year: tag.year(),
+            has_cover: tag.pictures().next().is_some(),
+        }),
+        Err(_) => Ok(AudioTags::default()),
+    }
+}
+
 /// Sanitize a string for Vorbis comments: UTF-8 only, no null bytes
 fn sanitize_vorbis_string(s: &str) -> String {
     s.chars().filter(|&c| c != '\0').collect()
 }
 
 /// Tag a FLAC file with Vorbis comments.
-/// Field names: ARTIST, ALBUM, TITLE, TRACKNUMBER (uppercase, UTF-8, no nulls)
+/// Field names: ARTIST, ALBUM, TITLE, TRACKNUMBER, GENRE (uppercase, UTF-8, no nulls)
 fn tag_flac(
     file_path: &Path,
     artist: &str,
     album: &str,
     title: &str,
     track: u32,
+    genre: Option<&str>,
     cover_path: Option<&Path>,
     config: &PortableConfig,
 ) -> anyhow::Result<()> {
@@ -31,12 +152,18 @@ fn tag_flac(
     flac_tag.remove_vorbis("ALBUM");
     flac_tag.remove_vorbis("TITLE");
     flac_tag.remove_vorbis("TRACKNUMBER");
+    flac_tag.remove_vorbis("GENRE");
 
     // Set Vorbis comments with sanitized UTF-8 strings (no null bytes)
     flac_tag.set_vorbis("ARTIST", vec![sanitize_vorbis_string(artist)]);
     flac_tag.set_vorbis("ALBUM", vec![sanitize_vorbis_string(album)]);
     flac_tag.set_vorbis("TITLE", vec![sanitize_vorbis_string(title)]);
     flac_tag.set_vorbis("TRACKNUMBER", vec![track.to_string()]);
+
+    // Set genre if provided
+    if let Some(g) = genre {
+        flac_tag.set_vorbis("GENRE", vec![sanitize_vorbis_string(g)]);
+    }
 
     // Add cover art if provided
     if let Some(cover) = cover_path {
@@ -71,7 +198,7 @@ fn tag_flac(
 }
 
 /// Tag an audio file with appropriate metadata format.
-/// - FLAC files: Vorbis comments (ARTIST, ALBUM, TITLE, TRACKNUMBER)
+/// - FLAC files: Vorbis comments (ARTIST, ALBUM, TITLE, TRACKNUMBER, GENRE)
 /// - WAV/AIFF/MP3/etc: ID3v2.3 tags
 pub fn tag_audio(
     file_path: &Path,
@@ -79,6 +206,7 @@ pub fn tag_audio(
     album: &str,
     title: &str,
     track: u32,
+    genre: Option<&str>,
     cover_path: Option<&Path>,
     config: &PortableConfig,
 ) -> anyhow::Result<()> {
@@ -89,7 +217,7 @@ pub fn tag_audio(
 
     // Use Vorbis comments for FLAC files
     if extension.as_deref() == Some("flac") {
-        return tag_flac(file_path, artist, album, title, track, cover_path, config);
+        return tag_flac(file_path, artist, album, title, track, genre, cover_path, config);
     }
 
     // Use ID3 tags for other formats
@@ -98,6 +226,11 @@ pub fn tag_audio(
     tag.set_album(album);
     tag.set_title(title);
     tag.set_track(track);
+
+    // Set genre if provided
+    if let Some(g) = genre {
+        tag.set_genre(g);
+    }
 
     if let Some(cover) = cover_path {
         if cover.exists() {

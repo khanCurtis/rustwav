@@ -118,5 +118,45 @@ pub enum Commands {
         #[arg(long)]
         clear_date: Option<String>,
     },
+    /// Display metadata tags from audio files
+    TagInfo {
+        /// Input file or directory to inspect
+        #[arg(short, long)]
+        input: String,
+
+        /// Process directories recursively
+        #[arg(short, long, default_value_t = false)]
+        recursive: bool,
+    },
+    /// Re-tag audio files with metadata from Spotify
+    Retag {
+        /// Input file or directory to retag
+        #[arg(short, long)]
+        input: String,
+
+        /// Process directories recursively
+        #[arg(short, long, default_value_t = false)]
+        recursive: bool,
+
+        /// Override artist name (optional, otherwise uses existing or searches Spotify)
+        #[arg(long)]
+        artist: Option<String>,
+
+        /// Override title (optional)
+        #[arg(long)]
+        title: Option<String>,
+
+        /// Override album name (optional)
+        #[arg(long)]
+        album: Option<String>,
+
+        /// Override genre (optional)
+        #[arg(long)]
+        genre: Option<String>,
+
+        /// Skip Spotify lookup, only apply provided overrides
+        #[arg(long, default_value_t = false)]
+        no_lookup: bool,
+    },
 }
 

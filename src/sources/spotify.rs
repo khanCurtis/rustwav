@@ -1,7 +1,8 @@
 use anyhow::Result;
 use futures::stream::TryStreamExt;
 use rspotify::clients::BaseClient;
-use rspotify::model::{AlbumId, FullAlbum, FullPlaylist, PlaylistId, PlaylistItem, SearchType};
+use rspotify::model::{AlbumId, ArtistId, FullAlbum, FullPlaylist, PlaylistId, PlaylistItem, SearchType};
+use rspotify::prelude::Id;
 use rspotify::{ClientCredsSpotify, Credentials};
 
 /// Metadata fetched from Spotify for a track
@@ -12,6 +13,7 @@ pub struct TrackMetadata {
     pub title: String,
     pub track_number: u32,
     pub cover_url: Option<String>,
+    pub genre: Option<String>,
 }
 
 async fn get_spotify_client() -> Result<ClientCredsSpotify, anyhow::Error> {
@@ -70,6 +72,35 @@ fn extract_id<'a>(link: &'a str, kind: &str) -> Result<&'a str, anyhow::Error> {
     Ok(link)
 }
 
+/// Fetch genres for an artist by their Spotify ID
+pub async fn fetch_artist_genres(artist_id: &str) -> Result<Vec<String>, anyhow::Error> {
+    let spotify = get_spotify_client().await?;
+    let id = ArtistId::from_id(artist_id)?;
+    let artist = spotify.artist(id).await?;
+    Ok(artist.genres)
+}
+
+/// Fetch genres for an album (uses album's genres if available, otherwise artist genres)
+pub async fn fetch_album_genres(album: &FullAlbum) -> Option<String> {
+    // Albums sometimes have genres directly
+    if !album.genres.is_empty() {
+        return Some(album.genres.first()?.clone());
+    }
+
+    // Otherwise, try to get genre from the first artist
+    if let Some(artist) = album.artists.first() {
+        if let Some(id) = &artist.id {
+            if let Ok(genres) = fetch_artist_genres(id.id()).await {
+                if let Some(genre) = genres.first() {
+                    return Some(genre.clone());
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// Search for a track on Spotify by artist and title.
 /// Returns metadata if found, None if no results.
 pub async fn search_track(artist: &str, title: &str) -> Result<Option<TrackMetadata>, anyhow::Error> {
@@ -85,9 +116,8 @@ pub async fn search_track(artist: &str, title: &str) -> Result<Option<TrackMetad
     // Extract track from search results
     if let rspotify::model::SearchResult::Tracks(tracks) = result {
         if let Some(track) = tracks.items.into_iter().next() {
-            let artist_name = track
-                .artists
-                .first()
+            let first_artist = track.artists.first();
+            let artist_name = first_artist
                 .map(|a| a.name.clone())
                 .unwrap_or_else(|| artist.to_string());
 
@@ -101,12 +131,25 @@ pub async fn search_track(artist: &str, title: &str) -> Result<Option<TrackMetad
                 .first()
                 .map(|img| img.url.clone());
 
+            // Try to get genre from artist
+            let genre = if let Some(artist) = first_artist {
+                if let Some(id) = &artist.id {
+                    fetch_artist_genres(id.id()).await.ok()
+                        .and_then(|genres| genres.into_iter().next())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             return Ok(Some(TrackMetadata {
                 artist: artist_name,
                 album: album_name,
                 title: track_title,
                 track_number,
                 cover_url,
+                genre,
             }));
         }
     }

@@ -117,6 +117,9 @@ async fn run_cli(command: &cli::Commands, cli_args: &Cli) -> anyhow::Result<()> 
                 .unwrap_or_else(|| "Unknown Artist".to_string());
             let album_name = album.name.clone();
 
+            // Fetch genre for the album (from album or artist)
+            let album_genre = spotify::fetch_album_genres(&album).await;
+
             let album_folder = if config.enabled {
                 file_utils::create_portable_folder(&music_path, &config)
             } else {
@@ -188,6 +191,7 @@ async fn run_cli(command: &cli::Commands, cli_args: &Cli) -> anyhow::Result<()> 
                     &album_name,
                     &track_title,
                     (i + 1) as u32,
+                    album_genre.as_deref(),
                     cover_path.as_deref(),
                     &config,
                 )?;
@@ -270,12 +274,15 @@ async fn run_cli(command: &cli::Commands, cli_args: &Cli) -> anyhow::Result<()> 
                 })
                 .await??;
 
+                // For playlists, we don't have album-level genre info, use None
+                // The retag command can be used to add genre later
                 metadata::tag_audio(
                     &file_path,
                     &track_artist,
                     "Singles",
                     &track_title,
                     0,
+                    None, // genre - can be added via retag command
                     None,
                     &config,
                 )?;
@@ -388,6 +395,7 @@ async fn run_cli(command: &cli::Commands, cli_args: &Cli) -> anyhow::Result<()> 
                                             &meta.album,
                                             &meta.title,
                                             meta.track_number,
+                                            meta.genre.as_deref(),
                                             cover_path.as_deref(),
                                             &config,
                                         ) {
@@ -708,6 +716,7 @@ async fn run_cli(command: &cli::Commands, cli_args: &Cli) -> anyhow::Result<()> 
                                     &meta.album,
                                     &meta.title,
                                     meta.track_number,
+                                    meta.genre.as_deref(),
                                     cover_path.as_deref(),
                                     &config,
                                 ) {
@@ -754,6 +763,193 @@ async fn run_cli(command: &cli::Commands, cli_args: &Cli) -> anyhow::Result<()> 
             println!("  rustwav retry --date 2025-12-29     # Retry all errors from a date");
             println!();
             println!("Or use the TUI (press 'e' for error logs view).");
+        }
+
+        cli::Commands::TagInfo { input, recursive } => {
+            let input_path = std::path::Path::new(input);
+
+            let files: Vec<PathBuf> = if input_path.is_file() {
+                vec![input_path.to_path_buf()]
+            } else if input_path.is_dir() {
+                collect_audio_files(input_path, *recursive)?
+            } else {
+                anyhow::bail!("Input path does not exist: {}", input);
+            };
+
+            if files.is_empty() {
+                println!("No audio files found.");
+                return Ok(());
+            }
+
+            for file_path in &files {
+                println!("\n{}", file_path.display());
+                match metadata::read_tags(file_path) {
+                    Ok(tags) => print!("{}", tags),
+                    Err(e) => println!("  Error reading tags: {}", e),
+                }
+            }
+        }
+
+        cli::Commands::Retag {
+            input,
+            recursive,
+            artist: override_artist,
+            title: override_title,
+            album: override_album,
+            genre: override_genre,
+            no_lookup,
+        } => {
+            let input_path = std::path::Path::new(input);
+
+            let files: Vec<PathBuf> = if input_path.is_file() {
+                vec![input_path.to_path_buf()]
+            } else if input_path.is_dir() {
+                collect_audio_files(input_path, *recursive)?
+            } else {
+                anyhow::bail!("Input path does not exist: {}", input);
+            };
+
+            if files.is_empty() {
+                println!("No audio files found.");
+                return Ok(());
+            }
+
+            println!("Found {} file(s) to retag", files.len());
+
+            let mut success_count = 0;
+            let mut failed_count = 0;
+
+            for file_path in &files {
+                println!("\nProcessing: {}", file_path.display());
+
+                // Read existing tags
+                let existing_tags = metadata::read_tags(file_path).ok();
+
+                // Determine artist and title for Spotify lookup
+                let lookup_artist = override_artist.as_deref()
+                    .or(existing_tags.as_ref().and_then(|t| t.artist.as_deref()))
+                    .or_else(|| {
+                        // Try to extract from filename
+                        file_path.file_stem()
+                            .and_then(|s| s.to_str())
+                            .and_then(|s| s.split(" - ").next())
+                    });
+
+                let lookup_title = override_title.as_deref()
+                    .or(existing_tags.as_ref().and_then(|t| t.title.as_deref()))
+                    .or_else(|| {
+                        // Try to extract from filename
+                        file_path.file_stem()
+                            .and_then(|s| s.to_str())
+                            .and_then(|s| s.split(" - ").nth(1))
+                    });
+
+                // Search Spotify for metadata if not disabled
+                let spotify_meta = if *no_lookup {
+                    None
+                } else if let (Some(artist), Some(title)) = (lookup_artist, lookup_title) {
+                    println!("  Searching Spotify: {} - {}", artist, title);
+                    match spotify::search_track(artist, title).await {
+                        Ok(meta) => {
+                            if meta.is_some() {
+                                println!("  Found on Spotify!");
+                            } else {
+                                println!("  Not found on Spotify, using existing/provided values");
+                            }
+                            meta
+                        }
+                        Err(e) => {
+                            println!("  Spotify search failed: {}", e);
+                            None
+                        }
+                    }
+                } else {
+                    println!("  No artist/title available for Spotify lookup");
+                    None
+                };
+
+                // Determine final values: override > spotify > existing
+                let final_artist = override_artist.as_deref()
+                    .or(spotify_meta.as_ref().map(|m| m.artist.as_str()))
+                    .or(existing_tags.as_ref().and_then(|t| t.artist.as_deref()));
+
+                let final_title = override_title.as_deref()
+                    .or(spotify_meta.as_ref().map(|m| m.title.as_str()))
+                    .or(existing_tags.as_ref().and_then(|t| t.title.as_deref()));
+
+                let final_album = override_album.as_deref()
+                    .or(spotify_meta.as_ref().map(|m| m.album.as_str()))
+                    .or(existing_tags.as_ref().and_then(|t| t.album.as_deref()));
+
+                let final_genre = override_genre.as_deref()
+                    .or(spotify_meta.as_ref().and_then(|m| m.genre.as_deref()))
+                    .or(existing_tags.as_ref().and_then(|t| t.genre.as_deref()));
+
+                let final_track = spotify_meta.as_ref().map(|m| m.track_number)
+                    .or(existing_tags.as_ref().and_then(|t| t.track));
+
+                // Check we have minimum required data
+                let (artist, title, album) = match (final_artist, final_title, final_album) {
+                    (Some(a), Some(t), Some(al)) => (a, t, al),
+                    _ => {
+                        println!("  Error: Missing required metadata (artist, title, or album)");
+                        failed_count += 1;
+                        continue;
+                    }
+                };
+
+                // Download cover art if available from Spotify
+                let cover_path = if let Some(meta) = &spotify_meta {
+                    if let Some(url) = &meta.cover_url {
+                        let cover_file = file_path.with_file_name("temp_cover.jpg");
+                        if let Ok(response) = reqwest::blocking::get(url) {
+                            if let Ok(bytes) = response.bytes() {
+                                let _ = std::fs::write(&cover_file, &bytes);
+                                Some(cover_file)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                // Apply tags
+                match metadata::tag_audio(
+                    file_path,
+                    artist,
+                    album,
+                    title,
+                    final_track.unwrap_or(0),
+                    final_genre,
+                    cover_path.as_deref(),
+                    &config,
+                ) {
+                    Ok(()) => {
+                        println!("  Tagged: {} - {} ({})", artist, title, album);
+                        if let Some(g) = final_genre {
+                            println!("  Genre: {}", g);
+                        }
+                        success_count += 1;
+                    }
+                    Err(e) => {
+                        println!("  Error: {}", e);
+                        failed_count += 1;
+                    }
+                }
+
+                // Clean up temp cover
+                if let Some(cover) = cover_path {
+                    let _ = std::fs::remove_file(cover);
+                }
+            }
+
+            println!("\nRetag complete: {} succeeded, {} failed", success_count, failed_count);
         }
     }
 
