@@ -82,5 +82,15 @@ pub enum Commands {
         #[arg(short, long, default_value_t = false)]
         recursive: bool,
     },
+    /// Clean up the download database by removing entries for deleted files
+    Cleanup {
+        /// Show what would be removed without actually removing (dry run)
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+
+        /// Show detailed list of removed entries
+        #[arg(short, long, default_value_t = false)]
+        verbose: bool,
+    },
 }
 
