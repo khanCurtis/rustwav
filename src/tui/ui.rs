@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use super::app::{App, JobStatus, SettingsField, View, FORMAT_OPTIONS, QUALITY_OPTIONS};
+use super::app::{App, CleanupPreview, JobStatus, SettingsField, View, FORMAT_OPTIONS, QUALITY_OPTIONS};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -39,7 +39,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let selected = match app.view {
         View::Main | View::AddLink | View::LinkSettings | View::GenerateM3U | View::M3UConfirm => 0,
         View::Queue => 1,
-        View::Library | View::ConvertSettings | View::ConvertConfirm | View::ConvertBatchConfirm => 2,
+        View::Library | View::ConvertSettings | View::ConvertConfirm | View::ConvertBatchConfirm | View::CleanupConfirm => 2,
         View::Logs => 3,
     };
 
@@ -73,6 +73,7 @@ fn draw_main(frame: &mut Frame, app: &App, area: Rect) {
         View::ConvertSettings => draw_convert_settings_view(frame, app, area),
         View::ConvertConfirm => draw_convert_confirm_view(frame, app, area),
         View::ConvertBatchConfirm => draw_convert_batch_confirm_view(frame, app, area),
+        View::CleanupConfirm => draw_cleanup_confirm_view(frame, app, area),
     }
 }
 
@@ -425,7 +426,7 @@ fn draw_library_view(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(list, chunks[0]);
 
     // Help hint at bottom
-    let help = Paragraph::new(" ↑/↓ Navigate  |  c/C Convert  |  x/X Refresh Metadata  |  r Refresh list  |  Tab Switch")
+    let help = Paragraph::new(" ↑/↓ Navigate  |  c/C Convert  |  x/X Refresh Metadata  |  z Cleanup DB  |  r Refresh  |  Tab Switch")
         .style(Style::default().fg(Color::DarkGray));
     frame.render_widget(help, chunks[1]);
 }
@@ -799,6 +800,88 @@ fn draw_convert_batch_confirm_view(frame: &mut Frame, app: &App, area: Rect) {
                 Span::raw(" to keep all files"),
             ]),
         ];
+
+        let paragraph = Paragraph::new(text);
+        frame.render_widget(paragraph, inner);
+    }
+}
+
+fn draw_cleanup_confirm_view(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Cleanup Database ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if let Some(CleanupPreview { missing_count, total_count }) = &app.cleanup_preview {
+        let text = if *missing_count == 0 {
+            vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Database is clean!",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::raw("  All "),
+                    Span::styled(
+                        format!("{}", total_count),
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" entries point to existing files."),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::raw("  Press "),
+                    Span::styled("n", Style::default().fg(Color::Yellow)),
+                    Span::raw(" or "),
+                    Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                    Span::raw(" to go back"),
+                ]),
+            ]
+        } else {
+            vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Found entries with missing files!",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        format!("{}", missing_count),
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" of "),
+                    Span::styled(
+                        format!("{}", total_count),
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" entries point to deleted files."),
+                ]),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Remove these entries from the database?",
+                    Style::default().fg(Color::White),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::raw("  Press "),
+                    Span::styled("y", Style::default().fg(Color::Green)),
+                    Span::raw(" to clean up database"),
+                ]),
+                Line::from(vec![
+                    Span::raw("  Press "),
+                    Span::styled("n", Style::default().fg(Color::Red)),
+                    Span::raw(" to cancel"),
+                ]),
+            ]
+        };
 
         let paragraph = Paragraph::new(text);
         frame.render_widget(paragraph, inner);

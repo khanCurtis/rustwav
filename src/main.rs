@@ -445,6 +445,65 @@ async fn run_cli(command: &cli::Commands, cli_args: &Cli) -> anyhow::Result<()> 
                 converted_count, failed_count
             );
         }
+
+        cli::Commands::Cleanup { dry_run, verbose } => {
+            println!("Scanning download database for missing files...\n");
+
+            if *dry_run {
+                // Dry run: show what would be removed without actually removing
+                let missing: Vec<_> = db
+                    .all_tracks()
+                    .into_iter()
+                    .filter(|entry| !std::path::Path::new(&entry.path).exists())
+                    .collect();
+
+                if missing.is_empty() {
+                    println!("Database is clean. All {} entries point to existing files.", db.all_tracks().len());
+                } else {
+                    println!("Would remove {} entries (files no longer exist):\n", missing.len());
+                    for entry in &missing {
+                        println!("  {} - {}", entry.artist, entry.title);
+                        if *verbose {
+                            println!("    Path: {}", entry.path);
+                        }
+                    }
+                    println!("\nRun without --dry-run to remove these entries.");
+                }
+            } else {
+                // Collect entries to show before cleanup if verbose
+                let missing_entries: Vec<_> = if *verbose {
+                    db.all_tracks()
+                        .into_iter()
+                        .filter(|entry| !std::path::Path::new(&entry.path).exists())
+                        .cloned()
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+
+                // Actually perform cleanup
+                let (removed, total_before) = db.cleanup();
+
+                if removed == 0 {
+                    println!("Database is clean. All {} entries point to existing files.", total_before);
+                } else {
+                    if *verbose {
+                        println!("Removed {} entries:\n", removed);
+                        for entry in &missing_entries {
+                            println!("  {} - {}", entry.artist, entry.title);
+                            println!("    Path: {}", entry.path);
+                        }
+                        println!();
+                    }
+                    println!(
+                        "Cleanup complete: removed {} of {} entries. {} entries remaining.",
+                        removed,
+                        total_before,
+                        total_before - removed
+                    );
+                }
+            }
+        }
     }
 
     Ok(())

@@ -16,6 +16,7 @@ pub fn handle_events(app: &mut App) -> anyhow::Result<()> {
                     View::ConvertSettings => handle_convert_settings_mode(app, key.code),
                     View::ConvertConfirm => handle_convert_confirm_mode(app, key.code),
                     View::ConvertBatchConfirm => handle_convert_batch_confirm_mode(app, key.code),
+                    View::CleanupConfirm => handle_cleanup_confirm_mode(app, key.code),
                     _ => handle_normal_mode(app, key.code, key.modifiers),
                 }
             }
@@ -98,6 +99,8 @@ fn handle_normal_mode(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('x') if app.view == View::Library => app.start_refresh_metadata(),
         // 'X' in Library view refreshes metadata for ALL tracks
         KeyCode::Char('X') if app.view == View::Library => app.start_refresh_all_metadata(),
+        // 'z' in Library view starts database cleanup
+        KeyCode::Char('z') if app.view == View::Library => app.start_cleanup_database(),
         KeyCode::Tab => app.next_view(),
         KeyCode::Char('a') => app.start_add_album(),
         KeyCode::Char('p') => app.start_add_playlist(),
@@ -145,6 +148,14 @@ fn handle_convert_batch_confirm_mode(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Char('y') => app.confirm_batch_delete_originals(),
         KeyCode::Char('n') | KeyCode::Esc => app.cancel_batch_delete_originals(),
+        _ => {}
+    }
+}
+
+fn handle_cleanup_confirm_mode(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Char('y') => app.confirm_cleanup(),
+        KeyCode::Char('n') | KeyCode::Esc => app.cancel_cleanup(),
         _ => {}
     }
 }

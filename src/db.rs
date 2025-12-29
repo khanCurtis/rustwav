@@ -80,6 +80,38 @@ impl DownloadDB {
         }
     }
 
+    /// Clean up the database by removing entries for files that no longer exist.
+    /// Returns a tuple of (removed_count, total_before_cleanup).
+    pub fn cleanup(&mut self) -> (usize, usize) {
+        let total_before = self.tracks.len();
+
+        // Collect entries to remove (files that don't exist)
+        let missing: Vec<TrackEntry> = self
+            .tracks
+            .iter()
+            .filter(|entry| !Path::new(&entry.path).exists())
+            .cloned()
+            .collect();
+
+        let removed_count = missing.len();
+
+        // Remove missing entries
+        for entry in missing {
+            self.tracks.remove(&entry);
+        }
+
+        if removed_count > 0 {
+            self.save();
+        }
+
+        (removed_count, total_before)
+    }
+
+    /// Get all track entries (for listing purposes)
+    pub fn all_tracks(&self) -> Vec<&TrackEntry> {
+        self.tracks.iter().collect()
+    }
+
     fn save(&self) {
         if let Some(parent) = std::path::Path::new(&self.file_path).parent() {
             let _ = std::fs::create_dir_all(parent);

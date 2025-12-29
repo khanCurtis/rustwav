@@ -24,6 +24,7 @@ pub enum View {
     ConvertSettings,
     ConvertConfirm,
     ConvertBatchConfirm,
+    CleanupConfirm,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -102,6 +103,15 @@ pub struct App {
     pub convert_delete_pending: Option<ConvertDeletePending>,
     pub convert_all_mode: bool,
     pub convert_batch_delete_pending: Option<Vec<(String, String)>>,
+    // Cleanup state
+    pub cleanup_preview: Option<CleanupPreview>,
+}
+
+/// Preview of what cleanup will remove
+#[derive(Debug, Clone)]
+pub struct CleanupPreview {
+    pub missing_count: usize,
+    pub total_count: usize,
 }
 
 /// Pending M3U data waiting for user confirmation
@@ -189,6 +199,7 @@ impl App {
             convert_delete_pending: None,
             convert_all_mode: false,
             convert_batch_delete_pending: None,
+            cleanup_preview: None,
         }
     }
 
@@ -423,6 +434,7 @@ impl App {
             View::ConvertSettings => View::Main,
             View::ConvertConfirm => View::Main,
             View::ConvertBatchConfirm => View::Main,
+            View::CleanupConfirm => View::Main,
         };
     }
 
@@ -1057,6 +1069,67 @@ impl App {
 
         self.view = View::Logs;
         self.status_message = format!("Refreshing metadata for {} tracks...", track_count);
+    }
+
+    /// Start the cleanup process - shows confirmation with preview
+    pub fn start_cleanup_database(&mut self) {
+        // Count how many entries have missing files
+        let total_count = self.db.tracks.len();
+        let missing_count = self
+            .db
+            .tracks
+            .iter()
+            .filter(|entry| !std::path::Path::new(&entry.path).exists())
+            .count();
+
+        self.cleanup_preview = Some(CleanupPreview {
+            missing_count,
+            total_count,
+        });
+        self.view = View::CleanupConfirm;
+
+        if missing_count == 0 {
+            self.status_message =
+                "Database is clean! All entries point to existing files.".to_string();
+        } else {
+            self.status_message = format!(
+                "Found {} entries with missing files. Press 'y' to clean up, 'n' to cancel.",
+                missing_count
+            );
+        }
+    }
+
+    /// Confirm and execute the cleanup
+    pub fn confirm_cleanup(&mut self) {
+        let (removed, total_before) = self.db.cleanup();
+
+        // Refresh the library view
+        self.library = self.db.tracks.iter().cloned().collect();
+        if self.library_selected >= self.library.len() && !self.library.is_empty() {
+            self.library_selected = self.library.len() - 1;
+        }
+
+        self.cleanup_preview = None;
+        self.view = View::Library;
+        self.status_message = format!(
+            "Cleanup complete: removed {} of {} entries. {} remaining.",
+            removed,
+            total_before,
+            total_before - removed
+        );
+
+        self.add_log(format!(
+            "Database cleanup: removed {} entries ({} remaining)",
+            removed,
+            total_before - removed
+        ));
+    }
+
+    /// Cancel the cleanup and return to library
+    pub fn cancel_cleanup(&mut self) {
+        self.cleanup_preview = None;
+        self.view = View::Library;
+        self.status_message = "Cleanup cancelled.".to_string();
     }
 }
 
