@@ -357,6 +357,31 @@ impl App {
                         successful, total
                     );
                 }
+                DownloadEvent::RefreshStarted { id, artist, title } => {
+                    self.add_log(format!("[{}] Refreshing metadata: {} - {}", id, artist, title));
+                    self.status_message = format!("Refreshing metadata: {} - {}", artist, title);
+                }
+                DownloadEvent::RefreshComplete { id, artist, title } => {
+                    self.add_log(format!("[{}] Metadata refreshed: {} - {}", id, artist, title));
+                    self.status_message = format!("Metadata refreshed: {} - {}", artist, title);
+                }
+                DownloadEvent::RefreshFailed { id, artist, title, error } => {
+                    self.add_log(format!(
+                        "[{}] Metadata refresh failed: {} - {} - {}",
+                        id, artist, title, error
+                    ));
+                    self.status_message = format!("Refresh failed: {} - {}", artist, title);
+                }
+                DownloadEvent::RefreshBatchComplete { total, successful, .. } => {
+                    self.add_log(format!(
+                        "Batch metadata refresh complete: {}/{} successful",
+                        successful, total
+                    ));
+                    self.status_message = format!(
+                        "Batch metadata refresh complete: {}/{} tracks refreshed",
+                        successful, total
+                    );
+                }
                 DownloadEvent::ConvertBatchDeleteConfirm { converted_files } => {
                     let count = converted_files.len();
                     self.convert_batch_delete_pending = Some(converted_files);
@@ -971,6 +996,67 @@ impl App {
         self.view = View::Library;
         self.status_message = format!("Kept {} original files", count);
         self.refresh_library();
+    }
+
+    // Metadata refresh methods
+    pub fn start_refresh_metadata(&mut self) {
+        if self.library.is_empty() {
+            self.status_message = "Library is empty, nothing to refresh".to_string();
+            return;
+        }
+
+        let selected = &self.library[self.library_selected];
+        self.next_id += 1;
+        let id = self.next_id;
+
+        let request = DownloadRequest::RefreshMetadata {
+            id,
+            input_path: selected.path.clone(),
+            artist: selected.artist.clone(),
+            title: selected.title.clone(),
+        };
+
+        let tx = self.download_tx.clone();
+        tokio::spawn(async move {
+            let _ = tx.send(request).await;
+        });
+
+        self.view = View::Logs;
+        self.status_message = format!(
+            "Refreshing metadata for: {} - {}",
+            selected.artist, selected.title
+        );
+    }
+
+    pub fn start_refresh_all_metadata(&mut self) {
+        if self.library.is_empty() {
+            self.status_message = "Library is empty, nothing to refresh".to_string();
+            return;
+        }
+
+        self.next_id += 1;
+        let id = self.next_id;
+
+        let tracks: Vec<ConvertTrackInfo> = self
+            .library
+            .iter()
+            .map(|t| ConvertTrackInfo {
+                input_path: t.path.clone(),
+                artist: t.artist.clone(),
+                title: t.title.clone(),
+            })
+            .collect();
+        let track_count = tracks.len();
+
+        let request = DownloadRequest::RefreshMetadataBatch { id, tracks };
+
+        let tx = self.download_tx.clone();
+        tokio::spawn(async move {
+            let _ = tx.send(request).await;
+        });
+
+        self.view = View::Logs;
+        self.status_message = format!("Refreshing metadata for {} tracks...", track_count);
     }
 }
 

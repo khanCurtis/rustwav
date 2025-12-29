@@ -48,6 +48,16 @@ pub enum DownloadRequest {
         quality: String,
         refresh_metadata: bool,
     },
+    RefreshMetadata {
+        id: usize,
+        input_path: String,
+        artist: String,
+        title: String,
+    },
+    RefreshMetadataBatch {
+        id: usize,
+        tracks: Vec<ConvertTrackInfo>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -143,6 +153,31 @@ pub enum DownloadEvent {
         total: usize,
         successful: usize,
     },
+    /// Metadata refresh started
+    RefreshStarted {
+        id: usize,
+        artist: String,
+        title: String,
+    },
+    /// Metadata refresh complete
+    RefreshComplete {
+        id: usize,
+        artist: String,
+        title: String,
+    },
+    /// Metadata refresh failed
+    RefreshFailed {
+        id: usize,
+        artist: String,
+        title: String,
+        error: String,
+    },
+    /// Batch metadata refresh complete
+    RefreshBatchComplete {
+        id: usize,
+        total: usize,
+        successful: usize,
+    },
 }
 
 pub struct DownloadWorker {
@@ -234,6 +269,18 @@ impl DownloadWorker {
                         refresh_metadata,
                     )
                     .await;
+                }
+                DownloadRequest::RefreshMetadata {
+                    id,
+                    input_path,
+                    artist,
+                    title,
+                } => {
+                    self.process_refresh_metadata(id, &input_path, &artist, &title)
+                        .await;
+                }
+                DownloadRequest::RefreshMetadataBatch { id, tracks } => {
+                    self.process_refresh_metadata_batch(id, tracks).await;
                 }
             }
         }
@@ -1095,5 +1142,265 @@ impl DownloadWorker {
                 .send(DownloadEvent::ConvertBatchDeleteConfirm { converted_files })
                 .await;
         }
+    }
+
+    async fn process_refresh_metadata(
+        &mut self,
+        id: usize,
+        input_path: &str,
+        artist: &str,
+        title: &str,
+    ) {
+        let input = std::path::Path::new(input_path);
+
+        let _ = self
+            .tx
+            .send(DownloadEvent::RefreshStarted {
+                id,
+                artist: artist.to_string(),
+                title: title.to_string(),
+            })
+            .await;
+
+        self.send_log(
+            id,
+            format!("Refreshing metadata for: {} - {}", artist, title),
+        )
+        .await;
+
+        match spotify::search_track(artist, title).await {
+            Ok(Some(meta)) => {
+                // Download cover art if available
+                let cover_path = if let Some(url) = &meta.cover_url {
+                    let cover_file = input.with_file_name("temp_cover.jpg");
+                    if let Ok(response) = reqwest::get(url).await {
+                        if let Ok(bytes) = response.bytes().await {
+                            let _ = std::fs::write(&cover_file, &bytes);
+                            Some(cover_file)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                // Apply metadata
+                let config = PortableConfig {
+                    enabled: false,
+                    max_cover_dim: 500,
+                    max_cover_bytes: 300 * 1024,
+                    max_filename_len: 100,
+                };
+
+                if let Err(e) = metadata::tag_audio(
+                    input,
+                    &meta.artist,
+                    &meta.album,
+                    &meta.title,
+                    meta.track_number,
+                    cover_path.as_deref(),
+                    &config,
+                ) {
+                    self.send_log(id, format!("Failed to apply metadata: {}", e))
+                        .await;
+                    let _ = self
+                        .tx
+                        .send(DownloadEvent::RefreshFailed {
+                            id,
+                            artist: artist.to_string(),
+                            title: title.to_string(),
+                            error: e.to_string(),
+                        })
+                        .await;
+                } else {
+                    self.send_log(id, "Metadata refreshed successfully".to_string())
+                        .await;
+                    let _ = self
+                        .tx
+                        .send(DownloadEvent::RefreshComplete {
+                            id,
+                            artist: artist.to_string(),
+                            title: title.to_string(),
+                        })
+                        .await;
+                }
+
+                // Clean up temp cover
+                if let Some(cover) = cover_path {
+                    let _ = std::fs::remove_file(cover);
+                }
+            }
+            Ok(None) => {
+                self.send_log(
+                    id,
+                    format!("Could not find {} - {} on Spotify", artist, title),
+                )
+                .await;
+                let _ = self
+                    .tx
+                    .send(DownloadEvent::RefreshFailed {
+                        id,
+                        artist: artist.to_string(),
+                        title: title.to_string(),
+                        error: "Track not found on Spotify".to_string(),
+                    })
+                    .await;
+            }
+            Err(e) => {
+                self.send_log(id, format!("Spotify search failed: {}", e))
+                    .await;
+                let _ = self
+                    .tx
+                    .send(DownloadEvent::RefreshFailed {
+                        id,
+                        artist: artist.to_string(),
+                        title: title.to_string(),
+                        error: e.to_string(),
+                    })
+                    .await;
+            }
+        }
+    }
+
+    async fn process_refresh_metadata_batch(&mut self, id: usize, tracks: Vec<ConvertTrackInfo>) {
+        let total = tracks.len();
+        let mut successful = 0;
+
+        self.send_log(
+            id,
+            format!("Starting batch metadata refresh for {} tracks", total),
+        )
+        .await;
+
+        for (i, track) in tracks.iter().enumerate() {
+            let input = std::path::Path::new(&track.input_path);
+
+            self.send_log(
+                id,
+                format!(
+                    "[{}/{}] Refreshing: {} - {}",
+                    i + 1,
+                    total,
+                    track.artist,
+                    track.title
+                ),
+            )
+            .await;
+
+            let _ = self
+                .tx
+                .send(DownloadEvent::RefreshStarted {
+                    id,
+                    artist: track.artist.clone(),
+                    title: track.title.clone(),
+                })
+                .await;
+
+            match spotify::search_track(&track.artist, &track.title).await {
+                Ok(Some(meta)) => {
+                    let cover_path = if let Some(url) = &meta.cover_url {
+                        let cover_file = input.with_file_name("temp_cover.jpg");
+                        if let Ok(response) = reqwest::get(url).await {
+                            if let Ok(bytes) = response.bytes().await {
+                                let _ = std::fs::write(&cover_file, &bytes);
+                                Some(cover_file)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    let config = PortableConfig {
+                        enabled: false,
+                        max_cover_dim: 500,
+                        max_cover_bytes: 300 * 1024,
+                        max_filename_len: 100,
+                    };
+
+                    if metadata::tag_audio(
+                        input,
+                        &meta.artist,
+                        &meta.album,
+                        &meta.title,
+                        meta.track_number,
+                        cover_path.as_deref(),
+                        &config,
+                    )
+                    .is_ok()
+                    {
+                        successful += 1;
+                        let _ = self
+                            .tx
+                            .send(DownloadEvent::RefreshComplete {
+                                id,
+                                artist: track.artist.clone(),
+                                title: track.title.clone(),
+                            })
+                            .await;
+                    } else {
+                        let _ = self
+                            .tx
+                            .send(DownloadEvent::RefreshFailed {
+                                id,
+                                artist: track.artist.clone(),
+                                title: track.title.clone(),
+                                error: "Failed to apply metadata".to_string(),
+                            })
+                            .await;
+                    }
+
+                    if let Some(cover) = cover_path {
+                        let _ = std::fs::remove_file(cover);
+                    }
+                }
+                Ok(None) => {
+                    let _ = self
+                        .tx
+                        .send(DownloadEvent::RefreshFailed {
+                            id,
+                            artist: track.artist.clone(),
+                            title: track.title.clone(),
+                            error: "Track not found on Spotify".to_string(),
+                        })
+                        .await;
+                }
+                Err(e) => {
+                    let _ = self
+                        .tx
+                        .send(DownloadEvent::RefreshFailed {
+                            id,
+                            artist: track.artist.clone(),
+                            title: track.title.clone(),
+                            error: e.to_string(),
+                        })
+                        .await;
+                }
+            }
+        }
+
+        self.send_log(
+            id,
+            format!(
+                "Batch metadata refresh complete: {}/{} successful",
+                successful, total
+            ),
+        )
+        .await;
+
+        let _ = self
+            .tx
+            .send(DownloadEvent::RefreshBatchComplete {
+                id,
+                total,
+                successful,
+            })
+            .await;
     }
 }

@@ -425,7 +425,7 @@ fn draw_library_view(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(list, chunks[0]);
 
     // Help hint at bottom
-    let help = Paragraph::new(" ↑/↓ Navigate  |  c Convert  |  C Convert All  |  r Refresh  |  Tab Switch view")
+    let help = Paragraph::new(" ↑/↓ Navigate  |  c/C Convert  |  x/X Refresh Metadata  |  r Refresh list  |  Tab Switch")
         .style(Style::default().fg(Color::DarkGray));
     frame.render_widget(help, chunks[1]);
 }

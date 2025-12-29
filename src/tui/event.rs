@@ -94,6 +94,10 @@ fn handle_normal_mode(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('c') if app.view == View::Library => app.start_convert(),
         // 'C' in Library view starts conversion for ALL tracks
         KeyCode::Char('C') if app.view == View::Library => app.start_convert_all(),
+        // 'x' in Library view refreshes metadata for selected track
+        KeyCode::Char('x') if app.view == View::Library => app.start_refresh_metadata(),
+        // 'X' in Library view refreshes metadata for ALL tracks
+        KeyCode::Char('X') if app.view == View::Library => app.start_refresh_all_metadata(),
         KeyCode::Tab => app.next_view(),
         KeyCode::Char('a') => app.start_add_album(),
         KeyCode::Char('p') => app.start_add_playlist(),
