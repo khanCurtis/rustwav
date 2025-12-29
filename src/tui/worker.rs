@@ -8,7 +8,7 @@ use crate::{
     downloader,
     error_log::{ConvertErrorEntry, DownloadErrorEntry, ErrorLogManager, RefreshErrorEntry},
     file_utils, metadata,
-    sources::spotify,
+    sources::{spotify, youtube},
 };
 
 #[derive(Debug, Clone)]
@@ -28,6 +28,13 @@ pub enum DownloadRequest {
         quality: String,
     },
     Playlist {
+        id: usize,
+        link: String,
+        portable: bool,
+        format: String,
+        quality: String,
+    },
+    YouTubePlaylist {
         id: usize,
         link: String,
         portable: bool,
@@ -238,6 +245,16 @@ impl DownloadWorker {
                     self.process_playlist(id, &link, portable, &format, &quality)
                         .await;
                 }
+                DownloadRequest::YouTubePlaylist {
+                    id,
+                    link,
+                    portable,
+                    format,
+                    quality,
+                } => {
+                    self.process_youtube_playlist(id, &link, portable, &format, &quality)
+                        .await;
+                }
                 DownloadRequest::Convert {
                     id,
                     input_path,
@@ -302,6 +319,51 @@ impl DownloadWorker {
                 error, item_type, item_type)
         } else {
             error.to_string()
+        }
+    }
+
+    /// Download cover art from a URL to a file path, with proper error logging
+    async fn download_cover_art(&self, id: usize, url: &str, dest: &std::path::Path) -> Option<PathBuf> {
+        match reqwest::get(url).await {
+            Ok(response) => {
+                if !response.status().is_success() {
+                    self.send_log(
+                        id,
+                        format!("Cover art download failed: HTTP {}", response.status()),
+                    )
+                    .await;
+                    return None;
+                }
+                match response.bytes().await {
+                    Ok(bytes) => {
+                        if let Err(e) = std::fs::write(dest, &bytes) {
+                            self.send_log(
+                                id,
+                                format!("Failed to save cover art: {}", e),
+                            )
+                            .await;
+                            return None;
+                        }
+                        Some(dest.to_path_buf())
+                    }
+                    Err(e) => {
+                        self.send_log(
+                            id,
+                            format!("Failed to read cover art response: {}", e),
+                        )
+                        .await;
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                self.send_log(
+                    id,
+                    format!("Cover art download failed: {}", e),
+                )
+                .await;
+                None
+            }
         }
     }
 
@@ -409,19 +471,12 @@ impl DownloadWorker {
         // Download cover
         let cover_path: Option<PathBuf> = if let Some(image) = album.images.first() {
             let p = album_folder.join("cover.jpg");
-            if !p.exists() {
-                self.send_log(id, "Downloading cover art...".to_string())
-                    .await;
-                if let Ok(response) = reqwest::get(&image.url).await {
-                    if let Ok(bytes) = response.bytes().await {
-                        let _ = std::fs::write(&p, &bytes);
-                    }
-                }
-            }
             if p.exists() {
                 Some(p)
             } else {
-                None
+                self.send_log(id, "Downloading cover art...".to_string())
+                    .await;
+                self.download_cover_art(id, &image.url, &p).await
             }
         } else {
             None
@@ -912,6 +967,267 @@ impl DownloadWorker {
             .await;
     }
 
+    async fn process_youtube_playlist(
+        &mut self,
+        id: usize,
+        link: &str,
+        portable: bool,
+        format: &str,
+        quality: &str,
+    ) {
+        let config = if portable {
+            PortableConfig {
+                enabled: true,
+                max_cover_dim: 128,
+                max_cover_bytes: 64 * 1024,
+                max_filename_len: 64,
+            }
+        } else {
+            PortableConfig {
+                enabled: false,
+                max_cover_dim: 500,
+                max_cover_bytes: 300 * 1024,
+                max_filename_len: 100,
+            }
+        };
+
+        let actual_format = if portable { "mp3" } else { format };
+
+        self.send_log(id, format!("Fetching YouTube playlist: {}", link))
+            .await;
+
+        // Fetch playlist info using yt-dlp (blocking operation)
+        let link_clone = link.to_string();
+        let playlist_result = tokio::task::spawn_blocking(move || {
+            youtube::fetch_playlist(&link_clone)
+        })
+        .await;
+
+        let playlist = match playlist_result {
+            Ok(Ok(p)) => p,
+            Ok(Err(e)) => {
+                let error_msg = format!("Failed to fetch YouTube playlist: {}", e);
+                self.error_log.add_download_error(DownloadErrorEntry::new(
+                    link.to_string(),
+                    "youtube_playlist".to_string(),
+                    actual_format.to_string(),
+                    quality.to_string(),
+                    portable,
+                    None,
+                    None,
+                    error_msg.clone(),
+                ));
+                let _ = self
+                    .tx
+                    .send(DownloadEvent::Error { id, error: error_msg })
+                    .await;
+                return;
+            }
+            Err(e) => {
+                let error_msg = format!("Task error: {}", e);
+                let _ = self
+                    .tx
+                    .send(DownloadEvent::Error { id, error: error_msg })
+                    .await;
+                return;
+            }
+        };
+
+        let playlist_name = playlist.title.clone();
+        let total_tracks = playlist.tracks.len();
+
+        self.send_log(
+            id,
+            format!(
+                "Found: {} ({} tracks, format: {}, quality: {})",
+                playlist_name, total_tracks, actual_format, quality
+            ),
+        )
+        .await;
+
+        let _ = self
+            .tx
+            .send(DownloadEvent::Started {
+                id,
+                name: playlist_name.clone(),
+                total_tracks,
+            })
+            .await;
+
+        let mut downloaded_paths: Vec<PathBuf> = Vec::new();
+
+        for (i, track) in playlist.tracks.iter().enumerate() {
+            // Check for pause before starting each track
+            while *self.pause_rx.borrow() {
+                if self.pause_rx.changed().await.is_err() {
+                    return;
+                }
+            }
+
+            let track_title = track.title.clone();
+            let track_artist = track.artist.clone();
+
+            // Use music path and organize by artist/album (using playlist name as album)
+            let output_folder = if config.enabled {
+                file_utils::create_portable_folder(&self.music_path, &config)
+            } else {
+                file_utils::create_album_folder(&self.music_path, &track_artist, &playlist_name)
+            };
+
+            let safe_file_name =
+                file_utils::build_filename(&track_artist, &track_title, actual_format, &config);
+            let file_path = output_folder.join(&safe_file_name);
+
+            let entry = TrackEntry {
+                artist: track_artist.clone(),
+                title: track_title.clone(),
+                path: file_path.display().to_string(),
+            };
+
+            if self.db.contains(&entry) {
+                let _ = self
+                    .tx
+                    .send(DownloadEvent::TrackSkipped {
+                        id,
+                        artist: track_artist,
+                        title: track_title,
+                    })
+                    .await;
+                continue;
+            }
+
+            self.send_log(
+                id,
+                format!(
+                    "[{}/{}] Downloading: {} - {}",
+                    i + 1,
+                    total_tracks,
+                    track_artist,
+                    track_title
+                ),
+            )
+            .await;
+
+            let _ = self
+                .tx
+                .send(DownloadEvent::TrackStarted {
+                    id,
+                    artist: track_artist.clone(),
+                    title: track_title.clone(),
+                    track_num: i + 1,
+                })
+                .await;
+
+            // Download directly from YouTube URL instead of searching
+            let file_path_clone = file_path.clone();
+            let format_clone = actual_format.to_string();
+            let quality_clone = quality.to_string();
+            let video_url = track.url.clone();
+            let tx_clone = self.tx.clone();
+
+            match tokio::task::spawn_blocking(move || {
+                // Use the direct URL instead of search query
+                downloader::download_track_with_output(
+                    &video_url,
+                    &file_path_clone,
+                    &format_clone,
+                    &quality_clone,
+                    move |line| {
+                        let tx = tx_clone.clone();
+                        let line = line.to_string();
+                        let _ = tx.blocking_send(DownloadEvent::LogLine { id, line });
+                    },
+                )
+            })
+            .await
+            {
+                Ok(Ok(_)) => {
+                    // Tag with basic metadata (no cover art for YouTube)
+                    if let Err(e) = metadata::tag_audio(
+                        &file_path,
+                        &track_artist,
+                        &playlist_name, // Use playlist name as album
+                        &track_title,
+                        (i + 1) as u32,
+                        None, // No genre
+                        None, // No cover art
+                        &config,
+                    ) {
+                        self.send_log(id, format!("Warning: Tagging failed: {}", e))
+                            .await;
+                    }
+
+                    self.db.add(entry);
+                    downloaded_paths.push(file_path.clone());
+
+                    let _ = self
+                        .tx
+                        .send(DownloadEvent::TrackComplete {
+                            id,
+                            artist: track_artist,
+                            title: track_title,
+                            path: file_path.display().to_string(),
+                        })
+                        .await;
+                }
+                Ok(Err(e)) => {
+                    let error_msg = e.to_string();
+                    self.error_log.add_download_error(DownloadErrorEntry::new(
+                        link.to_string(),
+                        "youtube_playlist".to_string(),
+                        actual_format.to_string(),
+                        quality.to_string(),
+                        portable,
+                        Some(track_artist.clone()),
+                        Some(track_title.clone()),
+                        error_msg.clone(),
+                    ));
+                    let _ = self
+                        .tx
+                        .send(DownloadEvent::TrackFailed {
+                            id,
+                            artist: track_artist,
+                            title: track_title,
+                            error: error_msg,
+                        })
+                        .await;
+                }
+                Err(e) => {
+                    let error_msg = e.to_string();
+                    self.error_log.add_download_error(DownloadErrorEntry::new(
+                        link.to_string(),
+                        "youtube_playlist".to_string(),
+                        actual_format.to_string(),
+                        quality.to_string(),
+                        portable,
+                        Some(track_artist.clone()),
+                        Some(track_title.clone()),
+                        error_msg.clone(),
+                    ));
+                    let _ = self
+                        .tx
+                        .send(DownloadEvent::TrackFailed {
+                            id,
+                            artist: track_artist,
+                            title: track_title,
+                            error: error_msg,
+                        })
+                        .await;
+                }
+            }
+        }
+
+        let _ = file_utils::create_m3u(&playlist_name, &downloaded_paths, &self.playlist_path);
+
+        let _ = self
+            .tx
+            .send(DownloadEvent::Complete {
+                id,
+                name: playlist_name,
+            })
+            .await;
+    }
+
     async fn process_convert(
         &mut self,
         id: usize,
@@ -971,16 +1287,7 @@ impl DownloadWorker {
                             // Download cover art if available
                             let cover_path = if let Some(url) = &meta.cover_url {
                                 let cover_file = new_path.with_file_name("temp_cover.jpg");
-                                if let Ok(response) = reqwest::get(url).await {
-                                    if let Ok(bytes) = response.bytes().await {
-                                        let _ = std::fs::write(&cover_file, &bytes);
-                                        Some(cover_file)
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                }
+                                self.download_cover_art(id, url, &cover_file).await
                             } else {
                                 None
                             };
@@ -1167,16 +1474,7 @@ impl DownloadWorker {
                             Ok(Some(meta)) => {
                                 let cover_path = if let Some(url) = &meta.cover_url {
                                     let cover_file = new_path.with_file_name("temp_cover.jpg");
-                                    if let Ok(response) = reqwest::get(url).await {
-                                        if let Ok(bytes) = response.bytes().await {
-                                            let _ = std::fs::write(&cover_file, &bytes);
-                                            Some(cover_file)
-                                        } else {
-                                            None
-                                        }
-                                    } else {
-                                        None
-                                    }
+                                    self.download_cover_art(id, url, &cover_file).await
                                 } else {
                                     None
                                 };
@@ -1334,16 +1632,7 @@ impl DownloadWorker {
                 // Download cover art if available
                 let cover_path = if let Some(url) = &meta.cover_url {
                     let cover_file = input.with_file_name("temp_cover.jpg");
-                    if let Ok(response) = reqwest::get(url).await {
-                        if let Ok(bytes) = response.bytes().await {
-                            let _ = std::fs::write(&cover_file, &bytes);
-                            Some(cover_file)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
+                    self.download_cover_art(id, url, &cover_file).await
                 } else {
                     None
                 };
@@ -1489,16 +1778,7 @@ impl DownloadWorker {
                 Ok(Some(meta)) => {
                     let cover_path = if let Some(url) = &meta.cover_url {
                         let cover_file = input.with_file_name("temp_cover.jpg");
-                        if let Ok(response) = reqwest::get(url).await {
-                            if let Ok(bytes) = response.bytes().await {
-                                let _ = std::fs::write(&cover_file, &bytes);
-                                Some(cover_file)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
+                        self.download_cover_art(id, url, &cover_file).await
                     } else {
                         None
                     };

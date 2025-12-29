@@ -3,7 +3,7 @@ use crate::error_log::{
     ConvertErrorEntry, DownloadErrorEntry, ErrorLogManager, RefreshErrorEntry,
 };
 use crate::file_utils;
-use crate::spotify;
+use crate::sources::{spotify, youtube};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use tokio::sync::{mpsc, watch};
@@ -43,6 +43,7 @@ pub enum ErrorTab {
 pub enum LinkType {
     Album,
     Playlist,
+    YouTubePlaylist,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -507,6 +508,19 @@ impl App {
         self.status_message = format!("Enter Spotify playlist link{}:", mode);
     }
 
+    pub fn start_add_youtube_playlist(&mut self) {
+        self.view = View::AddLink;
+        self.input_mode = true;
+        self.input.clear();
+        self.link_type = LinkType::YouTubePlaylist;
+        let mode = if self.portable_mode {
+            " [portable]"
+        } else {
+            ""
+        };
+        self.status_message = format!("Enter YouTube playlist link{}:", mode);
+    }
+
     pub fn cancel_input(&mut self) {
         self.input_mode = false;
         self.input.clear();
@@ -524,6 +538,11 @@ impl App {
             self.view = View::Main;
             self.status_message = "No link provided".to_string();
             return;
+        }
+
+        // Auto-detect YouTube playlist URLs
+        if youtube::is_youtube_playlist(&link) {
+            self.link_type = LinkType::YouTubePlaylist;
         }
 
         // Store the link and go to settings
@@ -599,6 +618,22 @@ impl App {
                     quality: quality.clone(),
                 }
             }
+            LinkType::YouTubePlaylist => {
+                self.queue.push(QueueItem {
+                    id,
+                    name: "Fetching YouTube playlist...".to_string(),
+                    status: JobStatus::Fetching,
+                    current_track: None,
+                    progress: (0, 0),
+                });
+                DownloadRequest::YouTubePlaylist {
+                    id,
+                    link,
+                    portable: self.portable_mode,
+                    format: format.clone(),
+                    quality: quality.clone(),
+                }
+            }
         };
 
         // Spawn immediate metadata fetch (doesn't wait for download worker)
@@ -622,6 +657,10 @@ impl App {
                     } else {
                         None
                     }
+                }
+                LinkType::YouTubePlaylist => {
+                    // YouTube metadata is fetched by the worker, skip here
+                    None
                 }
             };
             if let Some(name) = name {

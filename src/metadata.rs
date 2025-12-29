@@ -168,7 +168,7 @@ fn tag_flac(
     // Add cover art if provided
     if let Some(cover) = cover_path {
         if cover.exists() {
-            if let Ok(data) = resize_and_read_image(cover, config) {
+            if let Ok(img) = resize_and_read_image(cover, config) {
                 // Remove existing pictures first
                 flac_tag.remove_picture_type(PictureType::CoverFront);
 
@@ -176,11 +176,11 @@ fn tag_flac(
                     picture_type: PictureType::CoverFront,
                     mime_type: "image/jpeg".to_string(),
                     description: String::new(),
-                    width: 0,
-                    height: 0,
-                    depth: 0,
+                    width: img.width,
+                    height: img.height,
+                    depth: 24, // RGB JPEG = 24-bit color depth
                     num_colors: 0,
-                    data,
+                    data: img.data,
                 };
                 flac_tag.add_picture(
                     picture.mime_type,
@@ -234,12 +234,12 @@ pub fn tag_audio(
 
     if let Some(cover) = cover_path {
         if cover.exists() {
-            if let Ok(data) = resize_and_read_image(cover, config) {
+            if let Ok(img) = resize_and_read_image(cover, config) {
                 let picture = Picture {
                     mime_type: "image/jpeg".to_string(),
                     picture_type: id3::frame::PictureType::CoverFront,
                     description: "cover".to_string(),
-                    data,
+                    data: img.data,
                 };
                 tag.add_frame(picture);
             }
@@ -275,7 +275,14 @@ fn encode_jpeg(img: &image::DynamicImage, quality: u8) -> anyhow::Result<Vec<u8>
     Ok(buf)
 }
 
-fn resize_and_read_image(cover: &Path, config: &PortableConfig) -> anyhow::Result<Vec<u8>> {
+/// Result of resizing an image, including dimensions for metadata
+pub struct ResizedImage {
+    pub data: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+fn resize_and_read_image(cover: &Path, config: &PortableConfig) -> anyhow::Result<ResizedImage> {
     let img = ImageReader::open(cover)?.decode()?;
     let (w, h) = img.dimensions();
     let max_dim = config.max_cover_dim;
@@ -300,5 +307,9 @@ fn resize_and_read_image(cover: &Path, config: &PortableConfig) -> anyhow::Resul
             q -= 10;
         }
     }
-    Ok(buf)
+    Ok(ResizedImage {
+        data: buf,
+        width: new_w,
+        height: new_h,
+    })
 }

@@ -105,6 +105,10 @@ fn draw_main_view(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw("  Add Spotify playlist"),
         ]),
         Line::from(vec![
+            Span::styled("    y", Style::default().fg(Color::Yellow)),
+            Span::raw("  Add YouTube playlist"),
+        ]),
+        Line::from(vec![
             Span::styled("    P", Style::default().fg(Color::Yellow)),
             Span::raw("  Toggle portable mode: "),
             portable_status,
@@ -148,12 +152,17 @@ fn draw_add_link_view(frame: &mut Frame, app: &App, area: Rect) {
         .margin(2)
         .split(area);
 
+    let title = match app.link_type {
+        crate::tui::app::LinkType::Album => " Spotify Album Link ",
+        crate::tui::app::LinkType::Playlist => " Spotify Playlist Link ",
+        crate::tui::app::LinkType::YouTubePlaylist => " YouTube Playlist Link ",
+    };
     let input = Paragraph::new(app.input.as_str())
         .style(Style::default().fg(Color::Yellow))
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Spotify Link "),
+                .title(title),
         );
 
     frame.render_widget(input, chunks[0]);

@@ -80,6 +80,7 @@ fn handle_logs_mode(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
         // Allow switching to add album/playlist from logs view
         KeyCode::Char('a') => app.start_add_album(),
         KeyCode::Char('p') => app.start_add_playlist(),
+        KeyCode::Char('y') => app.start_add_youtube_playlist(),
         KeyCode::Char('P') => app.toggle_portable(),
         KeyCode::Char('r') => app.refresh_library(),
         KeyCode::Char('m') => app.start_generate_m3u(),
@@ -105,6 +106,7 @@ fn handle_normal_mode(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Tab => app.next_view(),
         KeyCode::Char('a') => app.start_add_album(),
         KeyCode::Char('p') => app.start_add_playlist(),
+        KeyCode::Char('y') => app.start_add_youtube_playlist(),
         KeyCode::Char('P') => app.toggle_portable(),
         KeyCode::Char('l') => app.show_logs(),
         KeyCode::Char('e') => app.show_error_log(),

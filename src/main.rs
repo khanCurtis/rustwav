@@ -1,6 +1,7 @@
 mod sources {
     pub mod models;
     pub mod spotify;
+    pub mod youtube;
 }
 mod cli;
 mod converter;
