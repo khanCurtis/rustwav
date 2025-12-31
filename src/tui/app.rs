@@ -1431,6 +1431,179 @@ impl App {
         }
         self.load_errors_for_current_date();
     }
+
+    /// Retry the currently selected error
+    pub fn retry_selected_error(&mut self) {
+        if self.error_dates.is_empty() {
+            self.status_message = "No errors to retry".to_string();
+            return;
+        }
+
+        let date = self.error_dates[self.error_date_selected].clone();
+
+        match self.error_tab {
+            ErrorTab::Download => {
+                if self.error_selected >= self.download_errors.len() {
+                    self.status_message = "No download error selected".to_string();
+                    return;
+                }
+
+                let error = self.download_errors[self.error_selected].clone();
+                let error_id = error.id.clone();
+
+                // Determine link type from the error's link_type field
+                let link_type = match error.link_type.as_str() {
+                    "album" => LinkType::Album,
+                    "playlist" => LinkType::Playlist,
+                    "youtube_playlist" => LinkType::YouTubePlaylist,
+                    _ => {
+                        self.status_message =
+                            format!("Unknown link type: {}", error.link_type);
+                        return;
+                    }
+                };
+
+                // Create new job
+                self.next_id += 1;
+                let id = self.next_id;
+
+                let name = match (&error.artist, &error.title) {
+                    (Some(artist), Some(title)) => format!("{} - {} (retry)", artist, title),
+                    _ => format!("Retry: {}", &error.link[..error.link.len().min(40)]),
+                };
+
+                self.queue.push(QueueItem {
+                    id,
+                    name: name.clone(),
+                    status: JobStatus::Fetching,
+                    current_track: None,
+                    progress: (0, 0),
+                });
+
+                let request = match link_type {
+                    LinkType::Album => DownloadRequest::Album {
+                        id,
+                        link: error.link.clone(),
+                        portable: error.portable,
+                        format: error.format.clone(),
+                        quality: error.quality.clone(),
+                    },
+                    LinkType::Playlist => DownloadRequest::Playlist {
+                        id,
+                        link: error.link.clone(),
+                        portable: error.portable,
+                        format: error.format.clone(),
+                        quality: error.quality.clone(),
+                    },
+                    LinkType::YouTubePlaylist => DownloadRequest::YouTubePlaylist {
+                        id,
+                        link: error.link.clone(),
+                        portable: error.portable,
+                        format: error.format.clone(),
+                        quality: error.quality.clone(),
+                    },
+                };
+
+                let tx = self.download_tx.clone();
+                tokio::spawn(async move {
+                    let _ = tx.send(request).await;
+                });
+
+                // Increment retry count and remove from error log
+                self.error_log.increment_download_retry(&date, &error_id);
+                self.error_log.remove_download_error(&date, &error_id);
+                self.refresh_error_logs();
+
+                self.view = View::Queue;
+                self.status_message = format!("Retrying: {}", name);
+            }
+            ErrorTab::Convert => {
+                if self.error_selected >= self.convert_errors.len() {
+                    self.status_message = "No convert error selected".to_string();
+                    return;
+                }
+
+                let error = self.convert_errors[self.error_selected].clone();
+                let error_id = error.id.clone();
+
+                // Check if input file still exists
+                if !std::path::Path::new(&error.input_path).exists() {
+                    self.status_message =
+                        format!("Source file no longer exists: {}", error.input_path);
+                    return;
+                }
+
+                self.next_id += 1;
+                let id = self.next_id;
+
+                let name = format!("{} - {}", error.artist, error.title);
+
+                let request = DownloadRequest::Convert {
+                    id,
+                    input_path: error.input_path.clone(),
+                    target_format: error.target_format.clone(),
+                    quality: error.quality.clone(),
+                    refresh_metadata: error.refresh_metadata,
+                    artist: error.artist.clone(),
+                    title: error.title.clone(),
+                };
+
+                let tx = self.download_tx.clone();
+                tokio::spawn(async move {
+                    let _ = tx.send(request).await;
+                });
+
+                // Increment retry count and remove from error log
+                self.error_log.increment_convert_retry(&date, &error_id);
+                self.error_log.remove_convert_error(&date, &error_id);
+                self.refresh_error_logs();
+
+                self.view = View::Logs;
+                self.status_message = format!("Retrying conversion: {}", name);
+            }
+            ErrorTab::Refresh => {
+                if self.error_selected >= self.refresh_errors.len() {
+                    self.status_message = "No refresh error selected".to_string();
+                    return;
+                }
+
+                let error = self.refresh_errors[self.error_selected].clone();
+                let error_id = error.id.clone();
+
+                // Check if input file still exists
+                if !std::path::Path::new(&error.input_path).exists() {
+                    self.status_message =
+                        format!("Source file no longer exists: {}", error.input_path);
+                    return;
+                }
+
+                self.next_id += 1;
+                let id = self.next_id;
+
+                let name = format!("{} - {}", error.artist, error.title);
+
+                let request = DownloadRequest::RefreshMetadata {
+                    id,
+                    input_path: error.input_path.clone(),
+                    artist: error.artist.clone(),
+                    title: error.title.clone(),
+                };
+
+                let tx = self.download_tx.clone();
+                tokio::spawn(async move {
+                    let _ = tx.send(request).await;
+                });
+
+                // Increment retry count and remove from error log
+                self.error_log.increment_refresh_retry(&date, &error_id);
+                self.error_log.remove_refresh_error(&date, &error_id);
+                self.refresh_error_logs();
+
+                self.view = View::Logs;
+                self.status_message = format!("Retrying metadata refresh: {}", name);
+            }
+        }
+    }
 }
 
 /// Result of checking M3U tracks against the database

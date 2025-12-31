@@ -190,6 +190,8 @@ fn handle_error_log_mode(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
             app.refresh_error_logs();
             app.status_message = "Error logs refreshed".to_string();
         }
+        // Retry selected error
+        KeyCode::Char('R') => app.retry_selected_error(),
         _ => {}
     }
 }
