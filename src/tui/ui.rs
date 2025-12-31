@@ -118,6 +118,10 @@ fn draw_main_view(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw("  View download logs"),
         ]),
         Line::from(vec![
+            Span::styled("    e", Style::default().fg(Color::Yellow)),
+            Span::raw("  View error logs"),
+        ]),
+        Line::from(vec![
             Span::styled("    m", Style::default().fg(Color::Yellow)),
             Span::raw("  Generate M3U from Spotify link"),
         ]),
